@@ -33,7 +33,6 @@ This package uses Bun and has no build step or project scripts. From the reposit
 ```sh
 bun install
 bun pm ls --all
-bun -e 'const m = await import("./index.ts"); if (typeof m.default !== "function") throw new Error("invalid extension factory")'
 ```
 
-Edit `index.ts` directly, then restart OMP (or reload the extension in your development workflow) to try changes.
+The extension imports OMP runtime modules, so load it from an OMP installation to exercise it end to end. Edit `index.ts` directly, then restart OMP (or reload the extension in your development workflow) to try changes.
