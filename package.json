@@ -1,0 +1,16 @@
+{
+  "name": "hydemods",
+  "version": "1.0.0",
+  "description": "A small visual registry for Hyde's OMP tweaks.",
+  "type": "module",
+  "main": "./index.ts",
+  "dependencies": {
+    "@toon-format/toon": "4.1.1",
+    "yaml": "2.8.3"
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
