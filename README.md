@@ -8,9 +8,7 @@ One line, with [Bun](https://bun.sh) and git on your PATH:
 curl -fsSL https://raw.githubusercontent.com/emmahyde/hydemods/main/install.sh | sh
 ```
 
-- This clones the repository into `~/.omp/agent/extensions/hydemods` (where OMP discovers directory extensions), installs its dependencies, and updates an existing checkout on re-run. 
-- Set `HYDEMODS_DIR` to install elsewhere.
-- Restart OMP or run `/reload-plugins`, and open `/hydemods` to view and toggle the tweaks.
+Restart OMP or run `/reload-plugins`, and open `/hydemods` to view and toggle the tweaks.
 
 ## Included tweaks
 
