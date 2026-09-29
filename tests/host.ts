@@ -6,3 +6,7 @@ if (!Bun.which("omp")) {
 	console.warn("\nhydemods tests skipped: `omp` is not on PATH (the tests run against the installed OMP).\n");
 	process.exit(0);
 }
+
+// Bun resolves `@oh-my-pi/*` from node_modules, which a fresh clone lacks. Link the host's packages in
+// (the same step `bun run typecheck` does) before any test file imports them.
+await import("../scripts/link-host-types");
