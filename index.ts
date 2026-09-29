@@ -25,6 +25,7 @@ import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-co
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cappedRenderPayload, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { booleanSetting, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
+import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 
 type TweakCategory = "Interface";
@@ -71,6 +72,20 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Names the session once from the first prompt and locks it.",
 		category: "Interface",
 		render: () => "OMP's own auto-titling is disabled while this is on. /rename still overrides.",
+	},
+	{
+		name: "vault-url-drawer",
+		title: "vault:// completion drawer",
+		description: "Typing vault:// opens a drawer of Obsidian vaults, then folders and notes, like agent://.",
+		category: "Interface",
+		render: () => "Tab into a vault or folder to keep drilling; picking a note inserts its URL. Vaults come from Obsidian's own registry.",
+	},
+	{
+		name: "pr-url-drawer",
+		title: "pr:// completion drawer",
+		description: "Typing pr:// opens a drawer of your own open PRs with CI, unresolved-thread and merge-conflict status.",
+		category: "Interface",
+		render: () => "Needs an authenticated gh. HYDEMODS_PR_OWNERS=org1,org2 limits the list to those owners; HYDEMODS_PR_APPROVER=<regex> adds an approved column for a matching reviewer login.",
 	},
 ];
 
@@ -888,7 +903,7 @@ function installReadGroupTakeover(takeover: CardTakeover): void {
 		setToolActivityVisible: proto.setToolActivityVisible,
 		render: proto.render,
 	};
-	proto.updateArgs = function (args, toolCallId) {
+	proto.updateArgs = function(args, toolCallId) {
 		if (toolCallId) {
 			const state = stateOf(this);
 			const entry = state.entries.get(toolCallId);
@@ -897,14 +912,14 @@ function installReadGroupTakeover(takeover: CardTakeover): void {
 		}
 		return original.updateArgs.call(this, args, toolCallId);
 	};
-	proto.updateResult = function (result, isPartial, toolCallId) {
+	proto.updateResult = function(result, isPartial, toolCallId) {
 		if (toolCallId && !isPartial) {
 			const entry = stateOf(this).entries.get(toolCallId);
 			if (entry) entry.result = result;
 		}
 		return original.updateResult.call(this, result, isPartial, toolCallId);
 	};
-	proto.renameEntry = function (oldId, newId) {
+	proto.renameEntry = function(oldId, newId) {
 		const state = stateOf(this);
 		const entry = state.entries.get(oldId);
 		if (entry && oldId !== newId && !state.entries.has(newId)) {
@@ -913,26 +928,26 @@ function installReadGroupTakeover(takeover: CardTakeover): void {
 		}
 		return original.renameEntry.call(this, oldId, newId);
 	};
-	proto.removeEntry = function (toolCallId) {
+	proto.removeEntry = function(toolCallId) {
 		stateOf(this).entries.delete(toolCallId);
 		return original.removeEntry.call(this, toolCallId);
 	};
-	proto.attachUsage = function (toolCallIds, usage, durationMs, ttftMs, timestamp, turnElapsedMs) {
+	proto.attachUsage = function(toolCallIds, usage, durationMs, ttftMs, timestamp, turnElapsedMs) {
 		const state = stateOf(this);
 		let anchor: string | undefined;
 		for (const id of toolCallIds) if (state.entries.has(id)) anchor = id;
 		if (anchor) state.usage.set(anchor, { usage, durationMs, ttftMs, timestamp, turnElapsedMs });
 		return original.attachUsage.call(this, toolCallIds, usage, durationMs, ttftMs, timestamp, turnElapsedMs);
 	};
-	proto.setExpanded = function (expanded) {
+	proto.setExpanded = function(expanded) {
 		stateOf(this).expanded = expanded;
 		return original.setExpanded.call(this, expanded);
 	};
-	proto.setToolActivityVisible = function (visible) {
+	proto.setToolActivityVisible = function(visible) {
 		stateOf(this).visible = visible;
 		return original.setToolActivityVisible.call(this, visible);
 	};
-	proto.render = function (width) {
+	proto.render = function(width) {
 		const state = states.get(this);
 		if (!state || !state.visible || !takeover.active() || state.entries.size === 0) return original.render.call(this, width);
 		const rows: ReadTreeRow[] = [];
@@ -1295,7 +1310,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
-	pi.registerMessageRenderer("integrated-tool-expansion", () => ({ render: () => [], invalidate() {} }));
+	pi.registerMessageRenderer("integrated-tool-expansion", () => ({ render: () => [], invalidate() { } }));
 
 	/* ------------------------- TOON for the model ------------------------- */
 
@@ -1352,7 +1367,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 					const body = truncateToWidth(preview, Math.max(1, width - 2), Ellipsis.Unicode);
 					return [`${theme.fg("muted", "❯ ")}${theme.fg("dim", body)}`];
 				},
-				invalidate() {},
+				invalidate() { },
 			}),
 			{ placement: "aboveEditor" },
 		);
@@ -1415,8 +1430,20 @@ export default function hydemods(pi: ExtensionAPI): void {
 		watchSetting(sessionTitleTweak.setting, (enabled) => { setHostAutoTitle(!enabled); });
 	}
 
+	// Provider factories persist on the UI and are re-applied on every refresh, so install once per UI.
+	// Each drawer re-reads its setting per keystroke, so toggling needs no reinstall.
+	const drawersInstalled = new WeakSet<object>();
+	const installDrawers = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI || drawersInstalled.has(ctx.ui)) return;
+		drawersInstalled.add(ctx.ui);
+		ctx.ui.addAutocompleteProvider((inner) => withVaultDrawer(inner as EditorProvider, () => isTweakEnabled("vault-url-drawer")) as typeof inner);
+		ctx.ui.addAutocompleteProvider((inner) => withPrDrawer(inner as EditorProvider, () => isTweakEnabled("pr-url-drawer")) as typeof inner);
+		if (isTweakEnabled("pr-url-drawer")) void refreshMyPrs(); // warm the cache so the first pr:// is instant
+	};
+
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
+		installDrawers(ctx);
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
 		refreshLastPromptDrawer(ctx);

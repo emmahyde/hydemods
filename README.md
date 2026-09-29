@@ -31,6 +31,10 @@ All of these tweaks start enabled and can be toggled from the panel:
 - **TOON for the model** — hands JSON tool results (including MCP server JSON responses and fenced ```` ```json ```` blocks) to the model as TOON (Token-Oriented Object Notation), a compact table-like form that costs far fewer tokens than JSON; you still see OMP's JSON tree.
 - **Session title** — names the session once from the first prompt and locks it; `/rename` still overrides.
 - **Last prompt drawer** — shows a preview of your latest prompt above the editor.
+- **vault:// completion drawer** — typing `vault://` opens a drawer of your Obsidian vaults (read from Obsidian's own registry), then their folders and notes, the way `agent://` does. Picking a folder reopens the drawer one level down.
+- **pr:// completion drawer** — typing `pr://` opens a drawer of your own open pull requests, filterable by number, `owner/repo/`, or title text. Each entry shows CI state, unresolved review threads, and merge conflicts. It needs an authenticated [`gh`](https://cli.github.com); the list is fetched in the background and refreshed after a minute. Optional environment variables:
+  - `HYDEMODS_PR_OWNERS=org1,org2` limits the list to those repo owners.
+  - `HYDEMODS_PR_APPROVER=<regex>` adds an `approved` column that lights up when a reviewer whose login matches (case-insensitive, bots without the `[bot]` suffix) has approved.
 ## Install and use in OMP
 
 ## Development
