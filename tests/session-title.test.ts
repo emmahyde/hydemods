@@ -9,7 +9,6 @@ test("a real first prompt on an unnamed session earns one generation", () => {
 	expect(shouldGenerateTitle({ ...base, inFlightFor: "s1" })).toBe(false);
 	expect(shouldGenerateTitle({ ...base, inFlightFor: "other" })).toBe(true);
 	expect(shouldGenerateTitle({ ...base, isLocalCommand: true })).toBe(false);
-	expect(shouldGenerateTitle({ ...base, prompt: "thanks" })).toBe(false);
 });
 
 test("the host flag is set by the tweak and only cleared when the tweak set it", () => {

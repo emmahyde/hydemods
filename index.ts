@@ -9,13 +9,12 @@ import { summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme as uiTheme } from "@oh-my-pi/pi-tui/theme";
-import { fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
+import { fileHyperlink } from "@oh-my-pi/pi-tui/render";
 import { getMarkdownTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
-import { renderDefaultToolExecution } from "@oh-my-pi/pi-tui/tools/default-renderer";
-import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools/renderer";
-import { readSourceFsPath, splitPathAndSel } from "@oh-my-pi/pi-tui/tools/read";
+import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
+import { readSourceFsPath, renderFallbackToolCard, splitPathAndSel } from "./lib/host-copies";
 import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
@@ -1100,7 +1099,7 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 	for (const name of EXTRA_CARD_TOOLS) {
 		if (name in toolRenderers) continue;
 		const fallback = (args: unknown, result: { content: unknown; isError?: boolean } | undefined, options: { expanded: boolean; isPartial: boolean }, theme: Theme) =>
-			renderDefaultToolExecution({
+			renderFallbackToolCard({
 				label: name,
 				args,
 				result: result ? { output: toolResultText(result.content) ?? "", isError: result.isError } : undefined,

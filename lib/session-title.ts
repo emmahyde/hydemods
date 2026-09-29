@@ -1,4 +1,3 @@
-import { isLowSignalTitleInput } from "@oh-my-pi/pi-coding-agent/tiny/text";
 
 /**
  * The host names a session twice on its own: once from the first prompt, and again from the
@@ -15,27 +14,29 @@ const HOST_AUTO_TITLE_FLAG = "PI_NO_TITLE";
  * who exported it themselves keeps it when the tweak turns off.
  */
 export function setHostAutoTitle(enabled: boolean, env: Record<string, string | undefined> = Bun.env): void {
-	if (!enabled) {
-		if (env[HOST_AUTO_TITLE_FLAG] === undefined) env[HOST_AUTO_TITLE_FLAG] = "hydemods";
-		return;
-	}
-	if (env[HOST_AUTO_TITLE_FLAG] === "hydemods") delete env[HOST_AUTO_TITLE_FLAG];
+ if (!enabled) {
+  if (env[HOST_AUTO_TITLE_FLAG] === undefined) env[HOST_AUTO_TITLE_FLAG] = "hydemods";
+  return;
+ }
+ if (env[HOST_AUTO_TITLE_FLAG] === "hydemods") delete env[HOST_AUTO_TITLE_FLAG];
 }
 
 export interface TitleDecisionInput {
-	prompt: string;
-	sessionName: string | undefined;
-	sessionId: string;
-	/** Session id of a generation already running, if any. */
-	inFlightFor: string | undefined;
-	/** The prompt is a local slash command handled by an extension, not a request. */
-	isLocalCommand: boolean;
+ prompt: string;
+ sessionName: string | undefined;
+ sessionId: string;
+ /** Session id of a generation already running, if any. */
+ inFlightFor: string | undefined;
+ /** The prompt is a local slash command handled by an extension, not a request. */
+ isLocalCommand: boolean;
 }
 
-/** Mirrors the host's own gate: one generation per unnamed session, never for chatter. */
+/**
+ * One generation per unnamed session. Chatter ("thanks", "ok") needs no check here: the host's
+ * `generateSessionTitle` rejects low-signal input itself and returns null, so the next prompt retries.
+ */
 export function shouldGenerateTitle(input: TitleDecisionInput): boolean {
-	if (input.isLocalCommand) return false;
-	if (input.sessionName) return false;
-	if (input.inFlightFor === input.sessionId) return false;
-	return !isLowSignalTitleInput(input.prompt);
+ if (input.isLocalCommand) return false;
+ if (input.sessionName) return false;
+ return input.inFlightFor !== input.sessionId;
 }
