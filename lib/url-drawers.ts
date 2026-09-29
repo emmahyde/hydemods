@@ -244,13 +244,52 @@ export function toMyPr(pr: GqlPr, approver: RegExp | undefined): MyPr {
  };
 }
 
-export function prStatus(pr: MyPr): string {
+/** Status columns in display order; the approved column only exists when an approver is configured. */
+export function prStatusCells(pr: MyPr): string[] {
  const ci = { pass: "✓ CI", fail: "✗ CI", pending: "… CI", none: "– CI" }[pr.ci];
  const threads = pr.unresolvedThreads === 0 ? "✓ threads" : `✗ ${pr.unresolvedThreads} unresolved`;
  const merge = { clean: "✓ mergeable", conflicts: "✗ conflicts", unknown: "? mergeable" }[pr.mergeable];
- const parts = [ci, threads, merge];
- if (pr.approved !== null) parts.push(`${pr.approved ? "✓" : "–"} approved`);
- return parts.join(" · ");
+ const cells = [ci, threads, merge];
+ if (pr.approved !== null) cells.push(`${pr.approved ? "✓" : "–"} approved`);
+ return cells;
+}
+
+// OMP's drawer caps the label column at 32 cells and collapses whitespace runs in labels and descriptions,
+// but a label-only row gets the full drawer width. So each PR row is a single label laid out as a table,
+// padded with U+2800 (renders blank, one cell wide, and is not `\s`, so the padding survives).
+const CELL_PAD = "\u2800";
+// Cursor prefix (2), OMP's own safety margin (2), and the drawer's scrollbar gutter (2).
+const ROW_CHROME = 6;
+const MIN_TITLE_WIDTH = 16;
+
+/** Pad `text` to `width` cells, or cut it to fit with a trailing ellipsis. */
+function fitCell(text: string, width: number): string {
+ const w = Bun.stringWidth(text);
+ if (w <= width) return text + CELL_PAD.repeat(width - w);
+ let out = "";
+ let used = 0;
+ for (const ch of text) {
+  const cw = Bun.stringWidth(ch);
+  if (used + cw > width - 1) break;
+  out += ch;
+  used += cw;
+ }
+ return `${out}…${CELL_PAD.repeat(width - 1 - used)}`;
+}
+
+/** One aligned row per PR: `#N title` column sized to the widest title that fits, then repo and status columns. */
+function prRows(prs: readonly MyPr[], width: number): string[] {
+ const rows = prs.map((pr) => [`#${pr.number} ${pr.isDraft ? "[draft] " : ""}${pr.title}`, pr.repo, ...prStatusCells(pr)]);
+ const columns = Math.max(...rows.map((r) => r.length));
+ const widths = Array.from({ length: columns }, (_, i) => Math.max(0, ...rows.map((r) => Bun.stringWidth(r[i] ?? ""))));
+ // Title gap is two pad cells; each later column is joined by " · ".
+ const rest = widths.slice(1).reduce((sum, w) => sum + w, 0) + 2 + 3 * (columns - 2);
+ widths[0] = Math.min(widths[0], Math.max(MIN_TITLE_WIDTH, width - ROW_CHROME - rest));
+ return rows.map((r) => {
+  // The last column needs no trailing padding.
+  const [title, ...others] = r.map((cell, i) => (i === r.length - 1 ? cell : fitCell(cell, widths[i])));
+  return `${title}${CELL_PAD.repeat(2)}${others.join(" · ")}`;
+ });
 }
 
 function prRank(pr: MyPr, query: string): number {
@@ -261,20 +300,21 @@ function prRank(pr: MyPr, query: string): number {
  return `${pr.repo} ${pr.title}`.toLowerCase().includes(query) ? 1 : 0;
 }
 
-/** Drawer entries for a `pr://…` token. Equal ranks keep the input (most recently updated) order. */
-export function prCompletions(token: string, prs: readonly MyPr[]): CompletionResult {
+/**
+ * Drawer entries for a `pr://…` token. Equal ranks keep the input (most recently updated) order.
+ * `width` is the terminal width the rows are fitted to.
+ */
+export function prCompletions(token: string, prs: readonly MyPr[], width = process.stdout.columns || 120): CompletionResult {
  const query = decodeSegment(token.slice("pr://".length)).toLowerCase();
- const items = prs
+ const shown = prs
   .map((pr) => ({ pr, rank: prRank(pr, query) }))
   .filter((v) => v.rank > 0)
   .sort((a, b) => b.rank - a.rank)
   .slice(0, DRAWER_LIMIT)
-  .map(({ pr }) => ({
-   value: `pr://${pr.repo}/${pr.number}`,
-   label: `#${pr.number} ${pr.isDraft ? "[draft] " : ""}${pr.title}`,
-   description: `${pr.repo} · ${prStatus(pr)}`,
-  }));
- return items.length > 0 ? { items, prefix: token } : null;
+  .map(({ pr }) => pr);
+ if (shown.length === 0) return null;
+ const labels = prRows(shown, width);
+ return { items: shown.map((pr, i) => ({ value: `pr://${pr.repo}/${pr.number}`, label: labels[i] })), prefix: token };
 }
 
 // gh's own auth identifies the viewer.

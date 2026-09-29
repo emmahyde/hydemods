@@ -22,6 +22,7 @@ import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cappedRenderPayload, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { booleanSetting, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
 import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
@@ -64,6 +65,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Shows a truncated preview of your latest prompt above the editor.",
 		category: "Interface",
 		render: () => "Automatic; no controls. The preview truncates to the terminal width.",
+	},
+	{
+		name: "latest-thought-panel",
+		title: "Latest thought panel",
+		description: "Keeps thinking out of the transcript and shows only the newest thought block above the editor.",
+		category: "Interface",
+		render: () => "Turns on OMP's Hide Thinking Blocks for the session (not saved) and tails the newest thought, last 8 lines, while it streams.",
 	},
 	{
 		name: "session-title",
@@ -1391,6 +1399,91 @@ export default function hydemods(pi: ExtensionAPI): void {
 	};
 
 
+	/* ---------------------------- Latest thought ---------------------------- */
+
+	// OMP's own thinking blocks stay hidden (hideThinkingBlock) while this is on; the panel shows only
+	// the newest thought block, tailing it while it streams.
+	const THOUGHT_PANEL_LINES = 8;
+	let latestThought = "";
+	let thoughtTui: { requestRender(): void } | undefined;
+
+	type ThinkingBlock = { type: "thinking"; thinking: string };
+	const isThinkingBlock = (block: unknown): block is ThinkingBlock =>
+		typeof block === "object" && block !== null && "type" in block && block.type === "thinking" && "thinking" in block && typeof block.thinking === "string" && block.thinking.trim().length > 0;
+	const lastThinkingText = (message: { role?: unknown; content?: unknown } | undefined): string | undefined => {
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) return undefined;
+		return message.content.findLast(isThinkingBlock)?.thinking.trim();
+	};
+
+	const latestSessionThought = (ctx: ExtensionContext): string => {
+		const entries = ctx.sessionManager.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			const text = entry.type === "message" && "message" in entry ? lastThinkingText(entry.message) : undefined;
+			if (text) return text;
+		}
+		return "";
+	};
+
+	const syncHostThinkingVisibility = (enabled: boolean) => {
+		if (!isSettingsInitialized()) return;
+		// The host re-applies this to every assistant message on screen when it changes.
+		if (enabled) cfgHideThinkingBlock.override(hostSettings, true);
+		else cfgHideThinkingBlock.clearOverride(hostSettings);
+	};
+
+	const refreshThoughtPanel = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		if (!isTweakEnabled("latest-thought-panel")) {
+			ctx.ui.setWidget("hydemods:latest-thought", undefined);
+			thoughtTui = undefined;
+			return;
+		}
+		ctx.ui.setWidget(
+			"hydemods:latest-thought",
+			(tui, theme) => {
+				thoughtTui = tui;
+				let cache: { text: string; width: number; lines: string[] } | undefined;
+				return {
+					render(width: number): readonly string[] {
+						if (!latestThought) return [];
+						if (cache?.text !== latestThought || cache.width !== width) {
+							const wrapped = latestThought.split("\n").filter((line) => line.trim()).flatMap((line) => wrapTextWithAnsi(line, Math.max(10, width - 4)));
+							const shown = wrapped.slice(-THOUGHT_PANEL_LINES);
+							const earlier = wrapped.length - shown.length;
+							const header = theme.fg("muted", `✻ thinking${earlier > 0 ? ` · ${earlier} earlier line${earlier === 1 ? "" : "s"}` : ""}`);
+							cache = { text: latestThought, width, lines: [header, ...shown.map((line) => `  ${theme.italic(theme.fg("thinkingText", line))}`)] };
+						}
+						return cache.lines;
+					},
+					invalidate() {
+						cache = undefined;
+					},
+				};
+			},
+			{ placement: "aboveEditor" },
+		);
+	};
+
+	const noteThought = (message: { role?: unknown; content?: unknown }) => {
+		if (!isTweakEnabled("latest-thought-panel")) return;
+		const text = lastThinkingText(message);
+		if (!text || text === latestThought) return;
+		latestThought = text;
+		thoughtTui?.requestRender();
+	};
+	pi.on("message_update", (event) => noteThought(event.message));
+	pi.on("message_end", (event) => noteThought(event.message));
+
+	const thoughtTweak = TWEAKS.find((tweak) => tweak.name === "latest-thought-panel");
+	if (thoughtTweak) {
+		syncHostThinkingVisibility(readSetting(thoughtTweak.setting));
+		watchSetting(thoughtTweak.setting, (enabled) => {
+			syncHostThinkingVisibility(enabled);
+			if (lastCtx) refreshThoughtPanel(lastCtx);
+		});
+	}
+
 	/* ----------------------------- Session title ---------------------------- */
 
 	// `titleSource` is on the live SessionManager but outside the read-only pick the context
@@ -1445,6 +1538,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 		installDrawers(ctx);
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
+		latestThought = latestSessionThought(ctx);
+		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
 		void pinHostTitle(ctx);
 	};

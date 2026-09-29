@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prCompletions, prStatus, toMyPr, vaultCompletions, withPrDrawer, withVaultDrawer, type EditorProvider, type GqlPr, type MyPr } from "../lib/url-drawers";
+import { prCompletions, prStatusCells, toMyPr, vaultCompletions, withPrDrawer, withVaultDrawer, type EditorProvider, type GqlPr, type MyPr } from "../lib/url-drawers";
 
 const pr = (over: Partial<MyPr>): MyPr => ({ number: 1, title: "t", repo: "o/r", isDraft: false, ci: "pass", unresolvedThreads: 0, mergeable: "clean", approved: null, ...over });
 
@@ -80,8 +80,28 @@ test("approval column appears only when an approver is configured and matches th
 	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "COMMENTED", author: { login: "review-bot" } }] } }), approver).approved).toBe(false);
 	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "APPROVED", author: null }] } }), approver).approved).toBe(false);
 
-	expect(prStatus(pr({ approved: null }))).toBe("✓ CI · ✓ threads · ✓ mergeable");
-	expect(prStatus(pr({ approved: true, ci: "fail", unresolvedThreads: 3, mergeable: "conflicts" }))).toBe("✗ CI · ✗ 3 unresolved · ✗ conflicts · ✓ approved");
+	expect(prStatusCells(pr({ approved: null }))).toEqual(["✓ CI", "✓ threads", "✓ mergeable"]);
+	expect(prStatusCells(pr({ approved: true, ci: "fail", unresolvedThreads: 3, mergeable: "conflicts" }))).toEqual(["✗ CI", "✗ 3 unresolved", "✗ conflicts", "✓ approved"]);
+});
+
+test("pr rows keep full titles, align every column, and survive OMP's whitespace collapsing", () => {
+	const prs = [
+		pr({ number: 1411, title: "refactor(github): replace GitHub event labels with stable keys", unresolvedThreads: 1 }),
+		pr({ number: 7, title: "short", repo: "acme/longer-repo" }),
+	];
+	const labels = (width: number) => prCompletions("pr://", prs, width)?.items.map((i) => i.label) ?? [];
+	// What OMP's select list does to a label before drawing it.
+	const drawn = (label: string) => label.replace(/\s+/g, " ");
+
+	const wide = labels(200).map(drawn);
+	expect(wide[0]).toContain("replace GitHub event labels with stable keys");
+	expect(wide[1].indexOf("acme/longer-repo")).toBe(wide[0].indexOf("o/r"));
+	for (const cell of ["CI", "mergeable"]) expect(wide[1].indexOf(cell)).toBe(wide[0].indexOf(cell));
+
+	// Narrow terminals cut the title, never the status, and every row still fits.
+	const narrow = labels(80);
+	expect(narrow[0]).toContain("…");
+	expect(narrow.every((l) => Bun.stringWidth(l) <= 76 && l.endsWith("mergeable"))).toBe(true);
 });
 
 const inner = (): EditorProvider & { calls: string[] } => {
