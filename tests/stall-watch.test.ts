@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyStall, detectStalls } from "../lib/stall-watch";
+import { classifyStall, detectStalls, toolStage } from "../lib/stall-watch";
 
 const now = new Date("2026-10-01T16:00:00.000Z");
 const old = "2026-10-01T15:54:00.000Z";
-const thresholds = { modelStallMinutes: 5, toolStallMinutes: 20 };
+const thresholds = { modelStallMinutes: 5, toolStageMinutes: [6, 12, 20] };
+const toolAt = (startedAt: string) => fixture([{ timestamp: startedAt, type: "custom", customType: "tool_execution_start", data: { toolName: "bash", startedAt } }]);
 
 function fixture(lines: unknown[]): string {
 	const root = mkdtempSync(join(tmpdir(), "hydemods-stall-"));
@@ -27,11 +28,27 @@ describe("stall watch", () => {
 		expect(stall?.message).toContain("waiting on model (gpt-5.6-luna)");
 	});
 
-	test("classifies an open tool execution with its tool name", () => {
-		const path = fixture([{ timestamp: "2026-10-01T15:30:00.000Z", type: "custom", customType: "tool_execution_start", data: { toolName: "bash", startedAt: "2026-10-01T15:30:00.000Z" } }]);
-		const stall = classifyStall(path, now, thresholds);
-		expect(stall?.kind).toBe("tool");
-		expect(stall?.message).toContain("waiting on tool bash for 30m");
+	test("escalates an open tool call: check-in, alert, then kill", () => {
+		expect(classifyStall(toolAt("2026-10-01T15:55:00.000Z"), now, thresholds)).toBeUndefined();
+		const checkIn = classifyStall(toolAt("2026-10-01T15:53:00.000Z"), now, thresholds);
+		expect(checkIn).toMatchObject({ kind: "tool", toolName: "bash", stage: 0, action: "check-in" });
+		expect(classifyStall(toolAt("2026-10-01T15:47:00.000Z"), now, thresholds)).toMatchObject({ stage: 1, action: "alert" });
+		const kill = classifyStall(toolAt("2026-10-01T15:30:00.000Z"), now, thresholds);
+		expect(kill).toMatchObject({ stage: 2, action: "kill" });
+		expect(kill?.message).toContain("waiting on tool bash for 30m");
+	});
+
+	test("a single tool stage only checks in and never kills", () => {
+		expect(toolStage(30, [6])).toEqual({ stage: 0, action: "check-in" });
+	});
+
+	test("alerts once per tool stage as a call keeps running", () => {
+		const path = toolAt("2026-10-01T15:53:00.000Z");
+		const alerted = new Set<string>();
+		expect(detectStalls(path, now, thresholds, alerted).map(s => s.action)).toEqual(["check-in"]);
+		expect(detectStalls(path, new Date("2026-10-01T16:03:00.000Z"), thresholds, alerted)).toHaveLength(0);
+		expect(detectStalls(path, new Date("2026-10-01T16:06:00.000Z"), thresholds, alerted).map(s => s.action)).toEqual(["alert"]);
+		expect(detectStalls(path, new Date("2026-10-01T16:14:00.000Z"), thresholds, alerted).map(s => s.action)).toEqual(["kill"]);
 	});
 
 	test("deduplicates an episode and rearms after a new entry", () => {

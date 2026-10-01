@@ -28,7 +28,7 @@ import { booleanSetting, integerSetting, readSetting, settings, watchSetting } f
 import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
-import { detectStalls, defaultStallThresholds } from "./lib/stall-watch";
+import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
 
 type TweakCategory = "Interface";
 
@@ -99,9 +99,12 @@ const TWEAK_DEFS: TweakDef[] = [
 	{
 		name: "stalled-agent-alerts",
 		title: "Stalled agent alerts",
-		description: "Notifies when this session or a subagent has made no persisted progress for too long.",
+		description: "Notifies when this session or a subagent has made no persisted progress for too long; escalates stuck subagent tool calls.",
 		category: "Interface",
-		render: () => `Model: ${defaultStallThresholds().modelStallMinutes}m; tools: ${defaultStallThresholds().toolStallMinutes}m. Alerts are informational only.`,
+		render: () => {
+			const { modelStallMinutes, toolStageMinutes } = defaultStallThresholds();
+			return `Model: alert at ${modelStallMinutes}m. Subagent tool calls: check in at ${toolStageMinutes[0]}m, alert at ${toolStageMinutes.slice(1, -1).join("/") || "-"}m, abort at ${toolStageMinutes.at(-1)}m.`;
+		},
 	},
 ];
 
@@ -1543,6 +1546,17 @@ export default function hydemods(pi: ExtensionAPI): void {
 		if (isTweakEnabled("pr-url-drawer")) void refreshMyPrs(); // warm the cache so the first pr:// is instant
 	};
 
+	// Runs inside the stalled subagent's own extension instance, so steer/abort hit that agent.
+	const actOnOwnToolStall = (stall: StallAlert, ctx: ExtensionContext) => {
+		const tool = stall.toolName ?? "tool";
+		if (stall.action === "check-in") {
+			pi.sendMessage({ customType: "hydemods-stall", display: true, content: `Stall check-in: your ${tool} call has run ${Math.floor(stall.idleMinutes)} minutes. When it returns, report what it was doing and whether it is still making progress before continuing.` }, { deliverAs: "steer" });
+		} else if (stall.action === "kill") {
+			ctx.abort();
+			pi.sendMessage({ customType: "hydemods-stall", display: true, content: `Your ${tool} call was aborted after ${Math.floor(stall.idleMinutes)} minutes without progress. Do not rerun it as-is: narrow it (smaller scope, a timeout, or async), then continue the task.` }, { deliverAs: "followUp", triggerTurn: true });
+		}
+	};
+
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
 		stopStallWatch?.();
@@ -1553,8 +1567,11 @@ export default function hydemods(pi: ExtensionAPI): void {
 			const check = () => {
 				if (!isTweakEnabled("stalled-agent-alerts")) return;
 				for (const stall of detectStalls(sessionFile, new Date(), defaultStallThresholds(), alerted)) {
-					if (ctx.hasUI) ctx.ui.notify(stall.message, "warning");
-					execFile("osascript", ["-e", `display notification ${JSON.stringify(stall.message)} with title "OMP agent stalled"`], () => {});
+					// Subagents (no UI) act on their own stalled tool call; the UI session only notifies.
+					if (!ctx.hasUI && stall.path === sessionFile && stall.kind === "tool") actOnOwnToolStall(stall, ctx);
+					if (!ctx.hasUI) continue;
+					ctx.ui.notify(stall.message, "warning");
+					execFile("osascript", ["-e", `display notification ${JSON.stringify(stall.message)} with title "OMP agent stalled"`], () => { });
 				}
 			};
 			const timer = ctx.setInterval(check, 30_000);

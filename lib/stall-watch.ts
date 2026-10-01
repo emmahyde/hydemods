@@ -2,11 +2,17 @@ import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 export type StallKind = "model" | "tool";
-export type StallThresholds = { modelStallMinutes: number; toolStallMinutes: number };
+export type StallThresholds = { modelStallMinutes: number; toolStageMinutes: number[] };
+/** check-in: ask the stuck agent to report; alert: notify only; kill: abort the agent's current turn. */
+export type StallAction = "check-in" | "alert" | "kill";
 export type StallAlert = {
 	agentName: string;
 	kind: StallKind;
 	idleMinutes: number;
+	/** Index of the highest tool stage passed; always 0 for model stalls. */
+	stage: number;
+	action: StallAction;
+	path: string;
 	model?: string;
 	toolName?: string;
 	startedAt: Date;
@@ -16,7 +22,8 @@ export type StallAlert = {
 
 type Entry = Record<string, unknown>;
 const MODEL_DEFAULT = 5;
-const TOOL_DEFAULT = 20;
+/** Tool-call escalation: first stage checks in, middle stages alert, the last kills. */
+const TOOL_STAGES_DEFAULT = [6, 12, 20];
 
 function asDate(value: unknown): Date | undefined {
 	if (typeof value === "number") return new Date(value < 10_000_000_000 ? value * 1000 : value);
@@ -63,11 +70,20 @@ function readEntries(path: string): Entry[] {
 }
 
 function thresholdsFromEnv(): StallThresholds {
-	const positive = (name: string, fallback: number) => {
-		const value = Number(process.env[name]);
-		return Number.isFinite(value) && value > 0 ? value : fallback;
+	const model = Number(process.env.HYDEMODS_STALL_MODEL_MIN);
+	const stages = (process.env.HYDEMODS_STALL_TOOL_STAGES ?? "").split(",").map(Number).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+	return {
+		modelStallMinutes: Number.isFinite(model) && model > 0 ? model : MODEL_DEFAULT,
+		toolStageMinutes: stages.length ? stages : TOOL_STAGES_DEFAULT,
 	};
-	return { modelStallMinutes: positive("HYDEMODS_STALL_MODEL_MIN", MODEL_DEFAULT), toolStallMinutes: positive("HYDEMODS_STALL_TOOL_MIN", TOOL_DEFAULT) };
+}
+
+/** Picks the stage an idle tool call has reached, or undefined below the first threshold. */
+export function toolStage(idleMinutes: number, stages: number[]): { stage: number; action: StallAction } | undefined {
+	const stage = stages.filter(minutes => idleMinutes > minutes).length - 1;
+	if (stage < 0) return undefined;
+	const action: StallAction = stage === 0 ? "check-in" : stages.length > 1 && stage === stages.length - 1 ? "kill" : "alert";
+	return { stage, action };
 }
 
 export function defaultStallThresholds(): StallThresholds { return thresholdsFromEnv(); }
@@ -98,14 +114,22 @@ export function classifyStall(path: string, now = new Date(), thresholds = thres
 		toolName = typeof priorTool === "string" ? priorTool : undefined;
 	} else return undefined;
 	const idleMinutes = Math.max(0, (now.getTime() - startedAt.getTime()) / 60_000);
-	const limit = kind === "model" ? thresholds.modelStallMinutes : thresholds.toolStallMinutes;
-	if (idleMinutes <= limit) return undefined;
+	let stage = 0;
+	let action: StallAction = "alert";
+	if (kind === "model") {
+		if (idleMinutes <= thresholds.modelStallMinutes) return undefined;
+	} else {
+		const reached = toolStage(idleMinutes, thresholds.toolStageMinutes);
+		if (!reached) return undefined;
+		({ stage, action } = reached);
+	}
 	const agentName = basename(path, ".jsonl");
 	const rounded = Math.floor(idleMinutes);
 	const since = startedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 	const detail = kind === "model" ? `waiting on model${model ? ` (${model})` : ""} since ${since}${toolName ? ` after ${toolName}` : ""}` : `waiting on tool ${toolName ?? "unknown"} for ${rounded}m`;
-	const message = `${agentName} idle ${rounded}m — ${detail}. Hint: kill: write proc://${agentName}/kill`;
-	return { agentName, kind, idleMinutes, model, toolName, startedAt, message, key: `${path}:${startedAt.toISOString()}:${kind}` };
+	const next = action === "check-in" ? "Asked it to check in." : action === "kill" ? "Aborting its turn." : `Hint: kill: write proc://${agentName}/kill`;
+	const message = `${agentName} idle ${rounded}m — ${detail}. ${next}`;
+	return { agentName, kind, idleMinutes, stage, action, path, model, toolName, startedAt, message, key: `${path}:${startedAt.toISOString()}:${kind}:${stage}` };
 }
 
 /** Scans the parent transcript and its sibling subagent transcripts, suppressing repeated alerts per episode. */
