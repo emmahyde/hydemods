@@ -29,8 +29,6 @@ import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 type TweakCategory = "Interface";
 
@@ -1574,11 +1572,13 @@ export default function hydemods(pi: ExtensionAPI): void {
 					if (!ctx.hasUI) continue;
 					ctx.ui.notify(stall.message, "warning");
 					execFile("osascript", ["-e", `display notification ${JSON.stringify(stall.message)} with title "OMP agent stalled"`], () => { });
-					// Subagent stalls also go to the main agent over IRC so it can act (kill, respawn, nudge).
+					// This instance runs in the main session, so posting here reaches the main agent:
+					// it steers a busy turn, or starts a turn when idle, so it can kill/respawn/nudge.
 					if (stall.path !== sessionFile) {
-						void IrcBus.global()
-							.send({ from: "StallWatch", to: MAIN_AGENT_ID, body: `[hydemods stall-watch, automated; do not reply] ${stall.message}` })
-							.catch(() => { });
+						pi.sendMessage(
+							{ customType: "hydemods-stall", display: true, content: `[hydemods stall-watch, automated] ${stall.message}` },
+							{ deliverAs: "steer", triggerTurn: true },
+						);
 					}
 				}
 			};
