@@ -94,7 +94,8 @@ export function classifyStall(path: string, now = new Date(), thresholds = thres
 		kind = "model";
 		model = entries.slice().reverse().map(modelOf).find(Boolean);
 		const priorStart = entries.slice(0, -1).reverse().find(entry => (dataOf(entry).customType ?? entry.customType) === "tool_execution_start");
-		toolName = priorStart ? (typeof dataOf(priorStart).toolName === "string" ? dataOf(priorStart).toolName : undefined) : undefined;
+		const priorTool = priorStart ? dataOf(priorStart).toolName : undefined;
+		toolName = typeof priorTool === "string" ? priorTool : undefined;
 	} else return undefined;
 	const idleMinutes = Math.max(0, (now.getTime() - startedAt.getTime()) / 60_000);
 	const limit = kind === "model" ? thresholds.modelStallMinutes : thresholds.toolStallMinutes;
