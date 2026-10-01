@@ -29,7 +29,10 @@ import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorResult, MonitorRegistry, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+
+type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
+const MONITOR_COLLAPSED_LINES = 8;
 
 type TweakCategory = "Interface";
 
@@ -1573,9 +1576,36 @@ export default function hydemods(pi: ExtensionAPI): void {
 
 	// Background monitors: wake this session when a watched shell check settles.
 	const monitors = new MonitorRegistry({
-		exec: (command, cwd, signal, timeoutMs) => pi.exec("bash", ["-lc", command], { cwd, signal, timeout: timeoutMs }),
+		// Login zsh loads ~/.zprofile (PATH for gh, bun, mise) but not ~/.zshrc, keeping output free of interactive-setup noise.
+		exec: (command, cwd, signal, timeoutMs) => pi.exec("zsh", ["-lc", command], { cwd, signal, timeout: timeoutMs }),
 		notify: (spec, result) =>
-			pi.sendMessage({ customType: "hydemods-monitor", display: true, content: formatMonitorResult(spec, result) }, { deliverAs: "steer", triggerTurn: true }),
+			pi.sendMessage<MonitorMessageDetails>(
+				{ customType: "hydemods-monitor", display: true, content: formatMonitorResult(spec, result), details: { spec, result } },
+				{ deliverAs: "steer", triggerTurn: true },
+			),
+	});
+	pi.registerMessageRenderer<MonitorMessageDetails>("hydemods-monitor", (message, { expanded }, theme) => {
+		if (!message.details) return undefined;
+		const { spec, result } = message.details;
+		const ok = result.outcome === "satisfied" || (result.outcome === "exited" && result.code === 0);
+		const label = {
+			satisfied: "✓ condition met",
+			exited: `${result.code === 0 ? "✓" : "✗"} exited ${result.code}`,
+			"timed-out": `⏱ timed out after ${spec.timeoutMin}m`,
+			error: "✗ failed to run",
+		}[result.outcome];
+		const status = theme.fg(ok ? "success" : result.outcome === "timed-out" ? "warning" : "error", label);
+		const meta = theme.fg("dim", `${result.elapsedSec}s · ${result.runs} run${result.runs === 1 ? "" : "s"}`);
+		const lines = result.output ? result.output.split("\n") : [];
+		const shown = expanded ? lines : lines.slice(-MONITOR_COLLAPSED_LINES);
+		const hidden = lines.length - shown.length;
+		const rows = [
+			`${theme.fg("accent", "Monitor")} ${theme.bold(spec.name)}  ${status}  ${meta}`,
+			theme.fg("dim", `$ ${spec.command}`),
+			...(hidden > 0 ? [theme.fg("muted", `… ${hidden} earlier line${hidden === 1 ? "" : "s"} (Ctrl+O)`)] : []),
+			...shown.map(line => theme.fg("text", line)),
+		];
+		return new Text(rows.join("\n"), 1, 0);
 	});
 	let monitorSessionFile: string | undefined;
 	const { Type } = pi.typebox;
