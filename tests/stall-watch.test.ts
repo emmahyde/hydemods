@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyStall, detectStalls, toolStage } from "../lib/stall-watch";
@@ -54,6 +54,16 @@ describe("stall watch", () => {
 	test("ignores a subagent that finished with yield", () => {
 		const path = fixture([{ timestamp: old, type: "message", message: { role: "toolResult", toolName: "yield", toolCallId: "call-1" } }]);
 		expect(classifyStall(path, now, thresholds)).toBeUndefined();
+	});
+
+	test("skips subagent transcripts left over from a previous OMP process", () => {
+		const parent = fixture([{ timestamp: now.toISOString(), type: "message", message: { role: "assistant", content: [] } }]);
+		const dir = parent.slice(0, -".jsonl".length);
+		mkdirSync(dir);
+		const child = join(dir, "Old.jsonl");
+		writeFileSync(child, JSON.stringify({ timestamp: "2026-10-01T15:30:00.000Z", type: "custom", customType: "tool_execution_start", data: { toolName: "bash", startedAt: "2026-10-01T15:30:00.000Z" } }) + "\n");
+		expect(detectStalls(parent, now, thresholds, new Set(), 0).map(s => s.agentName)).toEqual(["Old"]);
+		expect(detectStalls(parent, now, thresholds, new Set(), Date.now() + 60_000)).toHaveLength(0);
 	});
 
 	test("deduplicates an episode and rearms after a new entry", () => {

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -33,6 +33,11 @@ import { formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorS
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
 const MONITOR_COLLAPSED_LINES = 8;
+import { runawayEdit } from "./lib/runaway-edit";
+
+type StallMessageDetails = Pick<StallAlert, "agentName" | "kind" | "idleMinutes" | "action" | "toolName" | "model">;
+// Subagents never outlive the OMP process, so transcripts untouched since load are dead, not stalled.
+const WATCH_STARTED_AT = Date.now();
 
 type TweakCategory = "Interface";
 
@@ -737,7 +742,12 @@ function writeOutlineStructured(result: { details?: unknown; isError?: boolean }
 	const details = (result.details ?? {}) as { resolvedPath?: unknown; diagnostics?: EditOutlineDetails["diagnostics"] };
 	const fsPath = typeof details.resolvedPath === "string" ? details.resolvedPath : resolve(path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
 	const outline = memoOutline(`text:${fsPath}:${Bun.hash(content)}`, content, fsPath);
-	if (!outline || outline.declarations.length === 0) return undefined;
+	if (!outline || outline.declarations.length === 0) {
+		// Nothing to outline (scripts, data, prose): one summary row instead of the full content.
+		const lines = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+		const rows = [`${displayPath(fsPath)} · ${lines} line${lines === 1 ? "" : "s"} written`, ...diagnosticsRows(details.diagnostics, fsPath)];
+		return { text: rows.join("\n"), format: "outline", path: fsPath };
+	}
 	const rows = [...renderOutline(outline, displayPath(fsPath)), ...diagnosticsRows(details.diagnostics, fsPath)];
 	return { text: rows.join("\n"), format: "outline", lang: outline.language, path: fsPath };
 }
@@ -831,6 +841,8 @@ type EditOutlineDetails = {
 	oldText?: string;
 	newText?: string;
 	snapshotsPruned?: boolean;
+	/** Outline captured by hydemods when the edit finished, while the disk still matched the diff. */
+	hydemodsOutline?: string;
 	perFileResults?: Array<{ diagnostics?: DiagnosticsLike }>;
 	diagnostics?: DiagnosticsLike;
 };
@@ -868,6 +880,7 @@ function editOutlineStructured(result: { content: unknown; details?: unknown }):
 	const details = (result.details ?? undefined) as EditOutlineDetails | undefined;
 	if (!details || typeof details.diff !== "string" || !details.diff.trim() || (details.perFileResults?.length ?? 0) > 1) return undefined;
 	const path = typeof details.path === "string" ? details.path : undefined;
+	if (typeof details.hydemodsOutline === "string") return { text: details.hydemodsOutline, format: "edit-outline", path };
 	const diagnostics = details.diagnostics ?? details.perFileResults?.[0]?.diagnostics;
 	// Diagnostics can be filled in after the edit settles, so they are part of the memo key.
 	const diagnosticsKey = Bun.hash(JSON.stringify(diagnostics?.messages ?? [])).toString();
@@ -1087,6 +1100,12 @@ function carriesDiagnostics(details: unknown): boolean {
 // rather than a different one.
 function hydemodsResultComponent(toolName: string, result: { content: unknown; details?: unknown; isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme, args: unknown, takeover: CardTakeover) {
 	if (!takeover.active() || options.isPartial) return undefined;
+	// A rejected edit is routine (stale anchor, retry follows): one line, full text on Ctrl+O.
+	if (toolName === "edit" && result.isError && !options.expanded) {
+		const message = toolResultText(result.content)?.trim() ?? "";
+		const reason = message.split(/\n|(?<=\.)\s/)[0] ?? "edit rejected";
+		return new Text(`${theme.fg("error", "✖ edit rejected:")} ${theme.fg("muted", reason)} ${theme.fg("dim", "(Ctrl+O)")}`, 0, 0);
+	}
 	const outline = toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
@@ -1096,6 +1115,11 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 	// An edit that cannot be outlined is better shown as OMP's diff than as a file excerpt.
 	if (toolName === "edit") return undefined;
 	const resultText = toolResultText(result.content);
+	// A shell command handed to the background: its eventual output arrives as its own message.
+	if (toolName === "bash" && resultText && /^Backgrounded (early|as job)/.test(resultText)) {
+		const job = /\bbg_\d+\b/.exec(resultText)?.[0];
+		return new Text(theme.fg("muted", `↳ backgrounded${job ? ` as ${job}` : ""}; output follows when it finishes`), 0, 0);
+	}
 	if (nativeRendersJsonTree(toolName, args, resultText)) return undefined;
 	// Huge results keep the native card: hydemods would re-parse, colour and Markdown-render
 	// the whole payload on every repaint, and the native card already limits what it draws.
@@ -1502,7 +1526,36 @@ export default function hydemods(pi: ExtensionAPI): void {
 		latestThought = text;
 		thoughtTui?.requestRender();
 	};
-	pi.on("message_update", (event) => noteThought(event.message));
+	pi.on("message_update", (event, ctx) => {
+		noteThought(event.message);
+		guardRunawayEdit(event.message, ctx);
+	});
+
+	// Large files come back with pruned snapshots, and the card is redrawn long after later
+	// edits change the disk. Capture the outline now, while the disk still matches this diff.
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== "edit" || event.isError || !event.details || typeof event.details !== "object") return undefined;
+		// EditToolDetails is the host's type; hydemods reads the subset it outlines from.
+		const details: EditOutlineDetails = event.details;
+		if (typeof details.newText === "string" || details.hydemodsOutline !== undefined) return undefined;
+		const outline = editOutlineStructured({ content: event.content, details });
+		return outline ? { details: { ...event.details, hydemodsOutline: outline.text } } : undefined;
+	});
+
+	// Runaway edit guard: a model stuck repeating apply_patch markers streams until the output
+	// cap (~38 min). Abort the turn as soon as the pattern shows and tell the agent to retry small.
+	let guardedTimestamp: number | undefined;
+	const guardRunawayEdit = (message: MessageUpdateEvent["message"], ctx: ExtensionContext) => {
+		if (message.role !== "assistant" || guardedTimestamp === message.timestamp) return;
+		const runaway = runawayEdit(message.content);
+		if (!runaway) return;
+		guardedTimestamp = message.timestamp;
+		ctx.abort();
+		pi.sendMessage(
+			{ customType: "hydemods-runaway-edit", display: true, content: `Aborted a runaway edit call (${runaway.markers} "*** End Patch" markers, ${runaway.kb} KB). The edit tool has no Begin/End Patch markers. Re-issue it as small hashline ops, one region per call, or use write with the whole file.` },
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+	};
 	pi.on("message_end", (event) => noteThought(event.message));
 
 	const thoughtTweak = TWEAKS.find((tweak) => tweak.name === "latest-thought-panel");
@@ -1573,6 +1626,14 @@ export default function hydemods(pi: ExtensionAPI): void {
 			pi.sendMessage({ customType: "hydemods-stall", display: true, content: `Your ${tool} call was aborted after ${Math.floor(stall.idleMinutes)} minutes without progress. Do not rerun it as-is: narrow it (smaller scope, a timeout, or async), then continue the task.` }, { deliverAs: "followUp", triggerTurn: true });
 		}
 	};
+	pi.registerMessageRenderer<StallMessageDetails>("hydemods-stall", (message, _options, theme) => {
+		const stall = message.details;
+		if (!stall) return undefined;
+		const what = stall.kind === "tool" ? `in ${stall.toolName ?? "a tool"}` : `waiting on ${stall.model ?? "the model"}`;
+		const color = stall.action === "kill" ? "error" : "warning";
+		const next = stall.action === "kill" ? "turn aborted" : stall.action === "check-in" ? "asked to check in" : `kill: proc://${stall.agentName}/kill`;
+		return new Text(`${theme.fg(color, "⏸ Stalled")} ${theme.bold(stall.agentName)}  ${theme.fg("dim", `${Math.floor(stall.idleMinutes)}m ${what} · ${next}`)}`, 1, 0);
+	});
 
 	// Background monitors: wake this session when a watched shell check settles.
 	const monitors = new MonitorRegistry({
@@ -1665,7 +1726,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		if (sessionFile) {
 			const check = () => {
 				if (!isTweakEnabled("stalled-agent-alerts")) return;
-				for (const stall of detectStalls(sessionFile, new Date(), defaultStallThresholds(), alerted)) {
+				for (const stall of detectStalls(sessionFile, new Date(), defaultStallThresholds(), alerted, WATCH_STARTED_AT)) {
 					// Subagents (no UI) act on their own stalled tool call; the UI session only notifies.
 					if (!ctx.hasUI && stall.path === sessionFile && stall.kind === "tool") actOnOwnToolStall(stall, ctx);
 					if (!ctx.hasUI) continue;
@@ -1675,7 +1736,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 					// it steers a busy turn, or starts a turn when idle, so it can kill/respawn/nudge.
 					if (stall.path !== sessionFile) {
 						pi.sendMessage(
-							{ customType: "hydemods-stall", display: true, content: `[hydemods stall-watch, automated] ${stall.message}` },
+							{ customType: "hydemods-stall", display: true, content: `[hydemods stall-watch, automated] ${stall.message}`, details: { agentName: stall.agentName, kind: stall.kind, idleMinutes: stall.idleMinutes, action: stall.action, toolName: stall.toolName, model: stall.model } },
 							{ deliverAs: "steer", triggerTurn: true },
 						);
 					}

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 export type StallKind = "model" | "tool";
@@ -134,12 +134,19 @@ export function classifyStall(path: string, now = new Date(), thresholds = thres
 	return { agentName, kind, idleMinutes, stage, action, path, model, toolName, startedAt, message, key: `${path}:${startedAt.toISOString()}:${kind}:${stage}` };
 }
 
-/** Scans the parent transcript and its sibling subagent transcripts, suppressing repeated alerts per episode. */
-export function detectStalls(sessionFile: string, now = new Date(), thresholds = thresholdsFromEnv(), alerted = new Set<string>()): StallAlert[] {
+/**
+ * Scans the parent transcript and its sibling subagent transcripts, suppressing repeated alerts per episode.
+ * Subagent transcripts last written before `liveSince` belong to a previous OMP process (subagents never
+ * survive a restart), so they are skipped rather than reported as stalled forever.
+ */
+export function detectStalls(sessionFile: string, now = new Date(), thresholds = thresholdsFromEnv(), alerted = new Set<string>(), liveSince = 0): StallAlert[] {
 	const files = [sessionFile];
 	try {
 		const dir = sessionFile.slice(0, -".jsonl".length);
-		for (const name of readdirSync(dir)) if (name.endsWith(".jsonl")) files.push(join(dir, name));
+		for (const name of readdirSync(dir)) {
+			const path = join(dir, name);
+			if (name.endsWith(".jsonl") && statSync(path).mtimeMs >= liveSince) files.push(path);
+		}
 	} catch { /* session may not have a subagent directory yet */ }
 	const alerts: StallAlert[] = [];
 	for (const path of [...new Set(files)]) {
