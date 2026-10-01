@@ -35,6 +35,7 @@ All of these tweaks start enabled and can be toggled from the panel:
 - **pr:// completion drawer** — typing `pr://` opens a drawer of your own open pull requests, filterable by number, `owner/repo/`, or title text. Each entry shows CI state, unresolved review threads, and merge conflicts. It needs an authenticated [`gh`](https://cli.github.com); the list is fetched in the background and refreshed after a minute. Optional environment variables:
   - `HYDEMODS_PR_OWNERS=org1,org2` limits the list to those repo owners.
   - `HYDEMODS_PR_APPROVER=<regex>` adds an `approved` column that lights up when a reviewer whose login matches (case-insensitive, bots without the `[bot]` suffix) has approved.
+- **Stalled agent alerts** — checks the current session and its subagents every 30 seconds. After five minutes without persisted model progress (or 20 minutes in a tool), it sends one OMP warning and a macOS notification. Alerts are informational only. Override thresholds with `HYDEMODS_STALL_MODEL_MIN` and `HYDEMODS_STALL_TOOL_MIN`.
 ## Install and use in OMP
 
 ## Development

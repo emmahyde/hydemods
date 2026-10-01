@@ -27,6 +27,8 @@ import { cappedRenderPayload, decodeNestedJson, formatJsonOutput, formatFileExce
 import { booleanSetting, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
 import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
+import { execFile } from "node:child_process";
+import { detectStalls, defaultStallThresholds } from "./lib/stall-watch";
 
 type TweakCategory = "Interface";
 
@@ -93,6 +95,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Typing pr:// opens a drawer of your own open PRs with CI, unresolved-thread and merge-conflict status.",
 		category: "Interface",
 		render: () => "Needs an authenticated gh. HYDEMODS_PR_OWNERS=org1,org2 limits the list to those owners; HYDEMODS_PR_APPROVER=<regex> adds an approved column for a matching reviewer login.",
+	},
+	{
+		name: "stalled-agent-alerts",
+		title: "Stalled agent alerts",
+		description: "Notifies when this session or a subagent has made no persisted progress for too long.",
+		category: "Interface",
+		render: () => `Model: ${defaultStallThresholds().modelStallMinutes}m; tools: ${defaultStallThresholds().toolStallMinutes}m. Alerts are informational only.`,
 	},
 ];
 
@@ -1266,6 +1275,7 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 /* -------------------------------------------------------------------------- */
 
 export default function hydemods(pi: ExtensionAPI): void {
+	let stopStallWatch: (() => void) | undefined;
 	const display: ToolDisplayState = { collapsedLines: readSetting(collapsedLinesSetting), cardsOn: true };
 	const repaintToolCards = (ctx: ExtensionContext) => {
 		// ExtensionUIContext exposes no repaint call, and no other extension-visible setter
@@ -1535,6 +1545,22 @@ export default function hydemods(pi: ExtensionAPI): void {
 
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
+		stopStallWatch?.();
+		stopStallWatch = undefined;
+		const alerted = new Set<string>();
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		if (sessionFile) {
+			const check = () => {
+				if (!isTweakEnabled("stalled-agent-alerts")) return;
+				for (const stall of detectStalls(sessionFile, new Date(), defaultStallThresholds(), alerted)) {
+					if (ctx.hasUI) ctx.ui.notify(stall.message, "warning");
+					execFile("osascript", ["-e", `display notification ${JSON.stringify(stall.message)} with title "OMP agent stalled"`], () => {});
+				}
+			};
+			const timer = ctx.setInterval(check, 30_000);
+			stopStallWatch = () => ctx.clearTimer(timer);
+			check();
+		}
 		installDrawers(ctx);
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
