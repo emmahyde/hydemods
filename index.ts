@@ -29,6 +29,7 @@ import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
+import { formatMonitorResult, MonitorRegistry, type MonitorSpec } from "./lib/monitors";
 
 type TweakCategory = "Interface";
 
@@ -725,6 +726,19 @@ function readOutlineStructured(result: { content: unknown; details?: unknown }, 
 	return structured;
 }
 
+// A whole-file write shown as the declaration outline of what was written, plus diagnostics.
+function writeOutlineStructured(result: { details?: unknown; isError?: boolean }, args: unknown): StructuredText | undefined {
+	if (result.isError) return undefined;
+	const { path, content } = (args ?? {}) as { path?: unknown; content?: unknown };
+	if (typeof path !== "string" || typeof content !== "string" || !content.trim() || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return undefined;
+	const details = (result.details ?? {}) as { resolvedPath?: unknown; diagnostics?: EditOutlineDetails["diagnostics"] };
+	const fsPath = typeof details.resolvedPath === "string" ? details.resolvedPath : resolve(path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
+	const outline = memoOutline(`text:${fsPath}:${Bun.hash(content)}`, content, fsPath);
+	if (!outline || outline.declarations.length === 0) return undefined;
+	const rows = [...renderOutline(outline, displayPath(fsPath)), ...diagnosticsRows(details.diagnostics, fsPath)];
+	return { text: rows.join("\n"), format: "outline", lang: outline.language, path: fsPath };
+}
+
 function computeReadOutline(result: { content: unknown; details?: unknown }, args: unknown): StructuredText | undefined {
 	const details = (result.details ?? undefined) as ReadOutlineDetails | undefined;
 	const text = details?.displayContent?.text;
@@ -1070,7 +1084,7 @@ function carriesDiagnostics(details: unknown): boolean {
 // rather than a different one.
 function hydemodsResultComponent(toolName: string, result: { content: unknown; details?: unknown; isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme, args: unknown, takeover: CardTakeover) {
 	if (!takeover.active() || options.isPartial) return undefined;
-	const outline = toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : undefined;
+	const outline = toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
 		const details: ToolCardDetails = { toolName, result: outline.text, isError: false, cwd: process.cwd() };
@@ -1557,12 +1571,67 @@ export default function hydemods(pi: ExtensionAPI): void {
 		}
 	};
 
+	// Background monitors: wake this session when a watched shell check settles.
+	const monitors = new MonitorRegistry({
+		exec: (command, cwd, signal, timeoutMs) => pi.exec("bash", ["-lc", command], { cwd, signal, timeout: timeoutMs }),
+		notify: (spec, result) =>
+			pi.sendMessage({ customType: "hydemods-monitor", display: true, content: formatMonitorResult(spec, result) }, { deliverAs: "steer", triggerTurn: true }),
+	});
+	let monitorSessionFile: string | undefined;
+	const { Type } = pi.typebox;
+	pi.registerTool({
+		name: "monitor",
+		label: "Monitor",
+		loadMode: "essential",
+		description: [
+			"Start, list, or cancel a background monitor: a shell check that runs without blocking you and wakes you with a message when it settles.",
+			"Use instead of sleep/poll loops (CI, PR reviews, deploys, long jobs). After `start`, end your turn or do other work; do not wait or poll — the result arrives as a new message.",
+			'mode "poll" (default) re-runs `command` every `intervalSec` until it exits 0, or until `until` (regex over stdout+stderr) matches. Make the command print the status you are waiting for.',
+			'mode "exit" runs `command` once (e.g. `gh pr checks 123 --watch`) and reports when it exits, whatever the code.',
+			"Every monitor reports once: condition met, exited, timed out (`timeoutMin`), or failed to run. Starting a monitor with an existing name replaces it. Monitors live in this session and stop on reload or session switch.",
+		].join("\n"),
+		parameters: Type.Object({
+			op: Type.Union([Type.Literal("start"), Type.Literal("list"), Type.Literal("cancel")]),
+			name: Type.Optional(Type.String({ description: "Unique monitor name (required for start/cancel)." })),
+			command: Type.Optional(Type.String({ description: "Shell command (bash -lc). Required for start." })),
+			mode: Type.Optional(Type.Union([Type.Literal("poll"), Type.Literal("exit")])),
+			until: Type.Optional(Type.String({ description: "Poll mode: regex over output that means done. Default: exit code 0." })),
+			intervalSec: Type.Optional(Type.Number({ description: "Poll interval, default 30, min 5." })),
+			timeoutMin: Type.Optional(Type.Number({ description: "Give up and report after this many minutes, default 60." })),
+			cwd: Type.Optional(Type.String({ description: "Working directory, default the session cwd." })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const text = (body: string) => ({ content: [{ type: "text" as const, text: body }], details: undefined });
+			if (params.op === "list") {
+				const rows = monitors.list();
+				return text(rows.length ? rows.map(r => `${r.name} [${r.mode}] ${r.runs} runs, ${r.elapsedSec}s: ${r.command}${r.last ? `\n  last: ${r.last.split("\n").at(-1)}` : ""}`).join("\n") : "No monitors running.");
+			}
+			if (!params.name) throw new Error("`name` is required.");
+			if (params.op === "cancel") return text(monitors.cancel(params.name) ? `Cancelled monitor "${params.name}".` : `No monitor named "${params.name}".`);
+			if (!params.command) throw new Error("`command` is required for start.");
+			const spec: MonitorSpec = {
+				name: params.name,
+				command: params.command,
+				cwd: params.cwd ?? ctx.cwd,
+				mode: params.mode ?? "poll",
+				until: params.until,
+				intervalSec: Math.max(5, params.intervalSec ?? 30),
+				timeoutMin: Math.max(0.1, params.timeoutMin ?? 60),
+			};
+			void monitors.start(spec);
+			return text(`Monitor "${spec.name}" started (${spec.mode}, timeout ${spec.timeoutMin}m). You will get a message when it settles; end your turn or continue other work — do not poll.`);
+		},
+	});
+
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
 		stopStallWatch?.();
 		stopStallWatch = undefined;
-		const alerted = new Set<string>();
 		const sessionFile = ctx.sessionManager.getSessionFile();
+		// Monitors report into the session that started them; drop them when the session changes.
+		if (sessionFile !== monitorSessionFile) monitors.cancelAll();
+		monitorSessionFile = sessionFile;
+		const alerted = new Set<string>();
 		if (sessionFile) {
 			const check = () => {
 				if (!isTweakEnabled("stalled-agent-alerts")) return;

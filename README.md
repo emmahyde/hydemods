@@ -27,7 +27,7 @@ Restart OMP or run `/reload-plugins`, and open `/hydemods` to view and toggle th
 
 All of these tweaks start enabled and can be toggled from the panel:
 
-- **Integrated tool cards** — draws structured tool results inside OMP's own tool card. Reads show the file's declaration outline; edits show the declarations they touched, with the changed lines and any LSP diagnostics on Ctrl+O.
+- **Integrated tool cards** — draws structured tool results inside OMP's own tool card. Reads and whole-file writes show the file's declaration outline (writes add any LSP diagnostics); edits show the declarations they touched, with the changed lines and any LSP diagnostics on Ctrl+O.
 - **TOON for the model** — hands JSON tool results (including MCP server JSON responses and fenced ```` ```json ```` blocks) to the model as TOON (Token-Oriented Object Notation), a compact table-like form that costs far fewer tokens than JSON; you still see OMP's JSON tree.
 - **Session title** — names the session once from the first prompt and locks it; `/rename` still overrides.
 - **Last prompt drawer** — shows a preview of your latest prompt above the editor.
@@ -36,6 +36,8 @@ All of these tweaks start enabled and can be toggled from the panel:
   - `HYDEMODS_PR_OWNERS=org1,org2` limits the list to those repo owners.
   - `HYDEMODS_PR_APPROVER=<regex>` adds an `approved` column that lights up when a reviewer whose login matches (case-insensitive, bots without the `[bot]` suffix) has approved.
 - **Stalled agent alerts** — checks the current session and its subagents every 30 seconds and sends an OMP warning plus a macOS notification. Subagent stalls are also posted into the main agent's conversation (steering a running turn, or starting one when idle) so it can kill, respawn, or nudge the agent itself. Subagents that finished with `yield` are not treated as stalled. Model waits alert once after five minutes without persisted progress. Tool calls escalate: at 6 minutes the stuck subagent is asked to check in, at 12 minutes you get another alert, and at 20 minutes the subagent's turn is aborted and it is told to narrow the call and continue. The main session is only ever alerted, never steered or aborted. Override with `HYDEMODS_STALL_MODEL_MIN` and `HYDEMODS_STALL_TOOL_STAGES` (comma-separated minutes, e.g. `6,12,20`; the first stage checks in, the last aborts).
+
+The extension also registers a **`monitor` tool** for agents: `start` a named shell check (`mode: "poll"` re-runs it every `intervalSec` until it exits 0 or matches `until`; `mode: "exit"` runs it once, e.g. `gh pr checks 123 --watch`), then end the turn. When the check is met, exits, times out (`timeoutMin`, default 60) or fails to run, the result is posted into the session and starts a turn, so the agent goes idle instead of sleeping in a poll loop. `list` and `cancel` manage running monitors; they stop when the session changes or the extension reloads.
 ## Install and use in OMP
 
 ## Development
