@@ -51,6 +51,11 @@ describe("stall watch", () => {
 		expect(detectStalls(path, new Date("2026-10-01T16:14:00.000Z"), thresholds, alerted).map(s => s.action)).toEqual(["kill"]);
 	});
 
+	test("ignores a subagent that finished with yield", () => {
+		const path = fixture([{ timestamp: old, type: "message", message: { role: "toolResult", toolName: "yield", toolCallId: "call-1" } }]);
+		expect(classifyStall(path, now, thresholds)).toBeUndefined();
+	});
+
 	test("deduplicates an episode and rearms after a new entry", () => {
 		const path = fixture([{ timestamp: old, type: "message", message: { role: "user", content: "go" } }]);
 		const dir = path.slice(0, -".jsonl".length);

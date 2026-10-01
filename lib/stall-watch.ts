@@ -107,6 +107,8 @@ export function classifyStall(path: string, now = new Date(), thresholds = thres
 		toolName = typeof lastData.toolName === "string" ? lastData.toolName : undefined;
 		startedAt = asDate(lastData.startedAt) ?? lastTimestamp;
 	} else if (role === "toolResult" || role === "user") {
+		// A yield result is a finished subagent sitting idle, not a stall.
+		if (role === "toolResult" && (last.message as Entry | undefined)?.toolName === "yield") return undefined;
 		kind = "model";
 		model = entries.slice().reverse().map(modelOf).find(Boolean);
 		const priorStart = entries.slice(0, -1).reverse().find(entry => (dataOf(entry).customType ?? entry.customType) === "tool_execution_start");
