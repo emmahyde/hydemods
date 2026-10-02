@@ -27,7 +27,7 @@ Restart OMP or run `/reload-plugins`, and open `/hydemods` to view and toggle th
 
 All of these tweaks start enabled and can be toggled from the panel:
 
-- **Integrated tool cards** — draws structured tool results inside OMP's own tool card. Reads and whole-file writes show the file's declaration outline (writes add any LSP diagnostics; files with no declarations collapse to a one-line summary); edits show the declarations they touched, with the changed lines and any LSP diagnostics on Ctrl+O. Edits to large files, whose snapshots OMP prunes, have their outline captured when the edit finishes so it survives later edits and replays. Rejected edits and backgrounded shell commands collapse to one line.
+- **Integrated tool cards** — draws tool results inside OMP's own tool card. Read prose, Bash output (including errors), and Python evaluator output collapse to a preview with the full content on Ctrl+O. Reads and whole-file writes show the file's declaration outline (writes add any LSP diagnostics); edits show the declarations they touched, with changed lines and diagnostics on Ctrl+O. Backgrounded shell commands collapse to one line.
 - **TOON for the model** — hands JSON tool results (including MCP server JSON responses and fenced ```` ```json ```` blocks) to the model as TOON (Token-Oriented Object Notation), a compact table-like form that costs far fewer tokens than JSON; you still see OMP's JSON tree.
 - **Session title** — names the session once from the first prompt and locks it; `/rename` still overrides.
 - **Last prompt drawer** — shows a preview of your latest prompt above the editor.
@@ -40,6 +40,7 @@ All of these tweaks start enabled and can be toggled from the panel:
 - **Runaway edit guard** — aborts an `edit` call while it streams once its input repeats `*** End Patch` three times or passes 96 KB (a model stuck in apply_patch style otherwise streams to the output cap), then tells the agent to retry with small hashline ops.
 
 The extension also registers a **`monitor` tool** for agents: `start` a named shell check (run with `zsh -lc`; `mode: "poll"` re-runs it every `intervalSec` until it exits 0 or matches `until`; `mode: "exit"` runs it once, e.g. `gh pr checks 123 --watch`), then end the turn. When the check is met, exits, times out (`timeoutMin`, default 60) or fails to run, the result is posted into the session as a compact Monitor card (last 8 output lines; Ctrl+O for all) and starts a turn, so the agent goes idle instead of sleeping in a poll loop. `list` and `cancel` manage running monitors; they stop when the session changes or the extension reloads.
+
 ## Install and use in OMP
 
 ## Development

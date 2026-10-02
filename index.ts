@@ -23,7 +23,8 @@ import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-gene
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { cappedRenderPayload, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
+import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
+import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
 import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
@@ -556,19 +557,14 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 	return indent + colored;
 }
 
-// Tool-card styling. Truecolor lime label (#84cc16) on a deep blue block (#0f1d3a);
-// the theme palette has neither slot.
+// Tool-card styling. Truecolor lime label (#84cc16); the host card owns the background.
 const TOOL_NAME_ANSI = "\x1b[1;38;2;132;204;22m";
-const TOOL_BLOCK_BG = "\x1b[48;2;15;29;58m";
 const ANSI_RESET = "\x1b[0m";
 
-// Paints one card line edge to edge: pad to the full width, and re-arm the background
-// after every full reset that inner theme colors emit.
-function paintToolBlockLine(line: string, width: number): string {
+// Pad one card line to the requested width without changing its background.
+function padToolBlockLine(line: string, width: number): string {
 	const visible = visibleWidth(line);
-	const padded = line + " ".repeat(Math.max(0, width - visible));
-	const rearmed = padded.replace(/\x1b\[(?:0|49)m/g, (m) => `${m}${TOOL_BLOCK_BG}`);
-	return `${TOOL_BLOCK_BG}${rearmed}${ANSI_RESET}`;
+	return line + " ".repeat(Math.max(0, width - visible));
 }
 
 type ToolCardDetails = NonNullable<ToolMessage["details"]>;
@@ -594,7 +590,7 @@ function structureToolResult(details: ToolCardDetails | undefined): StructuredTe
 					linkable = false;
 				}
 			}
-			return linkable ? fileHyperlink(path, label, { line: location.line }) : label;
+			return linkable ? fileHyperlink(path, underlineLabel(label), { line: location.line }) : underlineLabel(label);
 		}).concat(references.incomplete ? ["…"] : []).join("\n"),
 		format: "links",
 	} : markdownText !== undefined ? { text: markdownText, format: "markdown" } : structuredResult(result);
@@ -623,7 +619,11 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 		? new Markdown(pretty.replace(/^(\[[^\]\r\n]+#[\da-f]+\]|\[(?:Source:|Showing lines|truncated;)[^\r\n]*\])$/gim, line => theme.fg("dim", line)), 0, 0, getMarkdownTheme(), { color: text => theme.fg("text", text) })
 		: undefined;
 	// A failed result keeps the standard layout; the error colour is what says it failed.
-	const contentLines = markdown ? [] : rawLines.map(line => error ? theme.fg("error", line) : colorizeStructuredLine(line, structured.format, theme));
+	const contentLines = markdown ? [] : rawLines.map((line, index) => {
+		const colored = error ? theme.fg("error", line) : colorizeStructuredLine(line, structured.format, theme);
+		if ((structured.format === "file" && index === 0) || (structured.path && index === 0)) return underlineLabel(colored);
+		return structured.format === "command" || structured.format === "text" ? underlinePathTokens(colored) : colored;
+	});
 	const heading = `${label} · expanded ${structured.lang || structured.format} output`;
 	return {
 		render(width: number): readonly string[] {
@@ -634,7 +634,7 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 			if (expanded) {
 				return [heading, ...renderedContent.map(line => `  ${line}`)]
 					.flatMap(line => wrapTextWithAnsi(line, width))
-					.map(line => paintToolBlockLine(line, width));
+					.map(line => padToolBlockLine(line, width));
 			}
 			const limit = display.collapsedLines;
 			// Collapsed edit cards are the declaration tree; the change lines wait for expansion.
@@ -669,7 +669,7 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 				if (messages.length > kept.length) selected.push(theme.fg("muted", `       … ${messages.length - kept.length} more`));
 			}
 			return selected.map((line, index) =>
-				paintToolBlockLine(truncateToWidth(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
+				padToolBlockLine(truncateToWidth(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
 		},
 		invalidate() { markdown?.invalidate(); },
 	};
@@ -1004,12 +1004,12 @@ function installReadGroupTakeover(takeover: CardTakeover): void {
 			if (!entry.result || entry.result.isError) return original.render.call(this, width);
 			rows.push({ id, ...readTreeRow(entry.result, entry.args) });
 		}
-		if (!rows.some(row => row.outline)) return original.render.call(this, width);
+		if (!rows.some(row => row.outline || row.prose)) return original.render.call(this, width);
 		return renderReadTree(rows, state, uiTheme, takeover.display, width);
 	};
 }
 
-type ReadTreeRow = { id: string; header: string; outline?: string[] };
+type ReadTreeRow = { id: string; header: string; outline?: string[]; prose?: string[] };
 
 // One read as a tree row: the path line (hyperlinked when it names a file) and, when the read
 // parses, its outline rows beneath.
@@ -1018,13 +1018,14 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 	if (structured) {
 		const [header, ...outline] = structured.text.split("\n");
 		const colored = colorizeOutlineLine(header, uiTheme);
-		return { header: structured.path ? fileHyperlink(structured.path, colored) : colored, outline };
+		return { header: structured.path ? fileHyperlink(structured.path, underlineLabel(colored)) : colored, outline };
 	}
 	const rawPath = args as { path?: unknown; file_path?: unknown } | undefined;
 	const target = typeof rawPath?.path === "string" ? rawPath.path : typeof rawPath?.file_path === "string" ? rawPath.file_path : "";
 	const split = splitPathAndSel(target);
 	const shown = /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? target : `${displayPath(split.path.startsWith("~/") ? resolve(homedir(), split.path.slice(2)) : resolve(split.path))}${split.sel ? `:${split.sel}` : ""}`;
-	return { header: uiTheme.fg("accent", shown) };
+	const text = toolResultText(result.content)?.trim();
+	return { header: /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? uiTheme.fg("accent", shown) : uiTheme.fg("accent", underlineLabel(shown)), prose: text ? text.split(/\r?\n/) : undefined };
 }
 
 // Collapsed outlines keep the first rows and count the rest; expanded shows every row.
@@ -1033,6 +1034,10 @@ function outlineRows(outline: string[], expanded: boolean, limit: number, theme:
 	if (expanded || colored.length <= limit) return colored;
 	const shown = Math.max(1, limit - 1);
 	return [...colored.slice(0, shown), theme.fg("muted", `… ${colored.length - shown} more`)];
+}
+
+function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
+	return collapseTextLines(prose, limit, expanded).map(line => line.startsWith("… ") ? theme.fg("muted", line) : line);
 }
 
 // Mirrors pi-tui's usage row, but against the theme handed to the renderer. The
@@ -1066,7 +1071,8 @@ function renderReadTree(rows: ReadTreeRow[], state: ReadGroupState, theme: Theme
 	if (rows.length === 1) {
 		const [row] = rows;
 		lines.push(` ${theme.format.bullet} ${title} ${row.header}`);
-		for (const line of outlineRows(row.outline ?? [], state.expanded, display.collapsedLines, theme)) lines.push(`   ${line}`);
+		const body = row.outline ? outlineRows(row.outline, state.expanded, display.collapsedLines, theme) : proseRows(row.prose ?? [], state.expanded, display.collapsedLines, theme);
+		for (const line of body) lines.push(`   ${line}`);
 		lines.push(...usageLines(row.id, "   "));
 	} else {
 		lines.push(` ${theme.format.bullet} ${title}${theme.fg("dim", ` (${rows.length})`)}`);
@@ -1075,7 +1081,8 @@ function renderReadTree(rows: ReadTreeRow[], state: ReadGroupState, theme: Theme
 			const connector = last ? theme.tree.last : theme.tree.branch;
 			const guide = last ? " ".repeat(visibleWidth(connector)) : `${theme.tree.vertical}${" ".repeat(Math.max(0, visibleWidth(connector) - visibleWidth(theme.tree.vertical)))}`;
 			lines.push(`   ${theme.fg("dim", connector)} ${row.header}`);
-			for (const line of outlineRows(row.outline ?? [], state.expanded, display.collapsedLines, theme)) lines.push(`   ${theme.fg("dim", guide)} ${line}`);
+			const body = row.outline ? outlineRows(row.outline, state.expanded, display.collapsedLines, theme) : proseRows(row.prose ?? [], state.expanded, display.collapsedLines, theme);
+			for (const line of body) lines.push(`   ${theme.fg("dim", guide)} ${line}`);
 			lines.push(...usageLines(row.id, `   ${guide} `));
 		});
 	}
@@ -1120,7 +1127,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const job = /\bbg_\d+\b/.exec(resultText)?.[0];
 		return new Text(theme.fg("muted", `↳ backgrounded${job ? ` as ${job}` : ""}; output follows when it finishes`), 0, 0);
 	}
-	if (nativeRendersJsonTree(toolName, args, resultText)) return undefined;
+	if (!result.isError && nativeRendersJsonTree(toolName, args, resultText)) return undefined;
 	// Huge results keep the native card: hydemods would re-parse, colour and Markdown-render
 	// the whole payload on every repaint, and the native card already limits what it draws.
 	if (resultText !== undefined && cappedRenderPayload(resultText) === undefined) return undefined;
@@ -1133,7 +1140,6 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const command = formatCommandText(structured.text);
 		if (command) return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details }, { expanded: options.expanded }, theme, takeover.display, command);
 	}
-	if (structured.format === "text") return undefined;
 	return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details }, { expanded: options.expanded }, theme, takeover.display, structured);
 }
 
@@ -1151,8 +1157,20 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 		const wrapped: ToolRenderer = {
 			...original,
 			renderResult(result, options, theme, args) {
+				const evalOptions = options as typeof options & {
+					renderContext?: { previewLines?: number;[key: string]: unknown };
+				};
+				const fallbackOptions = name === "eval"
+					? {
+						...evalOptions,
+						renderContext: {
+							...evalOptions.renderContext,
+							previewLines: takeover.display.collapsedLines,
+						},
+					}
+					: options;
 				return hydemodsResultComponent(name, result, options, theme, args, takeover)
-					?? original.renderResult(result, options, theme, args);
+					?? original.renderResult(result, fallbackOptions, theme, args);
 			},
 		};
 		toolRenderers[name] = wrapped;
@@ -1713,7 +1731,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 			return text(`Monitor "${spec.name}" started (${spec.mode}, timeout ${spec.timeoutMin}m). You will get a message when it settles; end your turn or continue other work — do not poll.`);
 		},
 	});
-
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
 		stopStallWatch?.();
@@ -1759,7 +1776,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("session_branch", onSession);
 	pi.on("session_tree", onSession);
 
-
 	pi.on("before_agent_start", (event, ctx) => {
 		const prompt = typeof event.prompt === "string" ? event.prompt : "";
 		if (prompt.trim().length > 0) {
@@ -1768,7 +1784,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 			void nameSessionFromPrompt(prompt, ctx);
 		}
 	});
-
 
 	/* ------------------------------ Commands -------------------------------- */
 
@@ -1784,6 +1799,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			ctx.ui.notify(`Session renamed to "${name}"`, "info");
 		},
 	});
+
+
 
 	pi.registerCommand("hydemods", {
 		description: "Open the tweak panel or set collapsed-lines N (default 5, saved to settings)",

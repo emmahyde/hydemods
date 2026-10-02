@@ -37,6 +37,14 @@ export function cappedRenderPayload<T>(value: T): T | undefined {
 	return bytes > MAX_RENDER_BYTES ? undefined : value;
 }
 
+/** Keep a bounded preview while retaining every line when the host requests expansion. */
+export function collapseTextLines(lines: string[], limit: number, expanded: boolean): string[] {
+	if (expanded || lines.length <= limit) return lines;
+	if (limit <= 1) return [`${lines[0] ?? ""} …`];
+	if (limit < 3) return [...lines.slice(0, limit - 1), `… ${lines.length - (limit - 1)} more`];
+	return [...lines.slice(0, limit - 2), "…", lines[lines.length - 1]];
+}
+
 /**
  * The parsed document when `text` is a YAML mapping or sequence worth re-encoding, otherwise
  * undefined. A single `key: value` line, a collection of prose lines, or anything with a
