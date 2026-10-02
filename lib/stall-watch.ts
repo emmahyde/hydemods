@@ -109,6 +109,9 @@ export function classifyStall(path: string, now = new Date(), thresholds = thres
 	} else if (role === "toolResult" || role === "user") {
 		// A yield result is a finished subagent sitting idle, not a stall.
 		if (role === "toolResult" && (last.message as Entry | undefined)?.toolName === "yield") return undefined;
+		// Tool results after an aborted assistant turn are the cancelled calls' placeholders; nothing is waiting on the model.
+		const lastAssistant = entries.slice().reverse().find(entry => (entry.message as Entry | undefined)?.role === "assistant");
+		if (role === "toolResult" && (lastAssistant?.message as Entry | undefined)?.stopReason === "aborted") return undefined;
 		kind = "model";
 		model = entries.slice().reverse().map(modelOf).find(Boolean);
 		const priorStart = entries.slice(0, -1).reverse().find(entry => (dataOf(entry).customType ?? entry.customType) === "tool_execution_start");

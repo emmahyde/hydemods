@@ -28,6 +28,15 @@ describe("stall watch", () => {
 		expect(stall?.message).toContain("waiting on model (gpt-5.6-luna)");
 	});
 
+	test("tool results after an aborted turn are not a model stall", () => {
+		const path = fixture([
+			{ timestamp: old, type: "message", message: { role: "assistant", model: "gpt-5.6-luna", stopReason: "aborted", content: [] } },
+			{ timestamp: old, type: "custom", customType: "tool_execution_start", data: { toolName: "edit", startedAt: old } },
+			{ timestamp: old, type: "message", message: { role: "toolResult", toolName: "edit", toolCallId: "call-1" } },
+		]);
+		expect(classifyStall(path, now, thresholds)).toBeUndefined();
+	});
+
 	test("escalates an open tool call: check-in, alert, then kill", () => {
 		expect(classifyStall(toolAt("2026-10-01T15:55:00.000Z"), now, thresholds)).toBeUndefined();
 		const checkIn = classifyStall(toolAt("2026-10-01T15:53:00.000Z"), now, thresholds);
