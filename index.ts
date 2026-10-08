@@ -4,6 +4,7 @@ import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, trunca
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Usage } from "@oh-my-pi/pi-ai";
@@ -25,14 +26,18 @@ import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settin
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
-import { booleanSetting, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
-import { refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
+import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
+import { fetchMyPrs, refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
+import { applyClassifications, assignTier, formatRorMessage, groupByTier, loadRorConfig, prKey, readyPrs, resolvePrRefs, rorConfigPath, saveRorConfig, sendSelfDm } from "./lib/ror";
+import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
+type MonitorEventDetails = { spec: MonitorSpec; lines: string[] };
 const MONITOR_COLLAPSED_LINES = 8;
 import { runawayEdit } from "./lib/runaway-edit";
 
@@ -1662,6 +1667,23 @@ export default function hydemods(pi: ExtensionAPI): void {
 				{ customType: "hydemods-monitor", display: true, content: formatMonitorResult(spec, result), details: { spec, result } },
 				{ deliverAs: "steer", triggerTurn: true },
 			),
+		emit: (spec, lines) =>
+			pi.sendMessage<MonitorEventDetails>(
+				{ customType: "hydemods-monitor-event", display: true, content: formatMonitorEvent(spec, lines), details: { spec, lines } },
+				{ deliverAs: "steer", triggerTurn: true },
+			),
+	});
+	pi.registerMessageRenderer<MonitorEventDetails>("hydemods-monitor-event", (message, { expanded }, theme) => {
+		if (!message.details) return undefined;
+		const { spec, lines } = message.details;
+		const shown = expanded ? lines : lines.slice(0, MONITOR_COLLAPSED_LINES);
+		const hidden = lines.length - shown.length;
+		const rows = [
+			`${theme.fg("accent", "Monitor event:")} ${theme.fg("text", shown[0] ?? "")} ${theme.fg("dim", `· ${spec.name}`)}`,
+			...shown.slice(1).map(line => `  ${theme.fg("text", line)}`),
+			...(hidden > 0 ? [theme.fg("muted", `  … ${hidden} more line${hidden === 1 ? "" : "s"} (Ctrl+O)`)] : []),
+		];
+		return new Text(rows.join("\n"), 1, 0);
 	});
 	pi.registerMessageRenderer<MonitorMessageDetails>("hydemods-monitor", (message, { expanded }, theme) => {
 		if (!message.details) return undefined;
@@ -1693,27 +1715,28 @@ export default function hydemods(pi: ExtensionAPI): void {
 		label: "Monitor",
 		loadMode: "essential",
 		description: [
-			"Start, list, or cancel a background monitor: a shell check that runs without blocking you and wakes you with a message when it settles.",
-			"Use instead of sleep/poll loops (CI, PR reviews, deploys, long jobs). After `start`, end your turn or do other work; do not wait or poll — the result arrives as a new message.",
-			'mode "poll" (default) re-runs `command` every `intervalSec` until it exits 0, or until `until` (regex over stdout+stderr) matches. Make the command print the status you are waiting for.',
-			'mode "exit" runs `command` once (e.g. `gh pr checks 123 --watch`) and reports when it exits, whatever the code.',
-			"Every monitor reports once: condition met, exited, timed out (`timeoutMin`), or failed to run. Starting a monitor with an existing name replaces it. Monitors live in this session and stop on reload or session switch.",
+			"Start, list, or cancel a background monitor: a shell command that runs without blocking you and wakes you with a message when something happens.",
+			"Use instead of sleep/poll loops (CI, PR reviews, deploys, long jobs). After `start`, end your turn or do other work; do not wait or poll — events arrive as new messages.",
+			'mode "stream" (default) runs `command` once as a watcher: EVERY stdout line is an event that wakes you (lines within ~300ms share one event), and a final message reports when it exits or times out. Write the command to print only meaningful state changes, deduped, e.g. `prev=; while true; do s=$(gh pr checks 1787 2>&1 | sort); [ "$s" != "$prev" ] && echo "$s"; prev=$s; sleep 60; done`. Use stderr or `>/dev/null` for noise; exit the loop when finished.',
+			'mode "poll" re-runs `command` every `intervalSec` and reports once when it exits 0, or when `until` (regex over stdout+stderr) matches.',
+			'mode "exit" runs `command` once (e.g. `gh pr checks 123 --watch`) and reports only when it exits, whatever the code.',
+			"Starting a monitor with an existing name replaces it. Monitors live in this session and stop on reload or session switch.",
 		].join("\n"),
 		parameters: Type.Object({
 			op: Type.Union([Type.Literal("start"), Type.Literal("list"), Type.Literal("cancel")]),
-			name: Type.Optional(Type.String({ description: "Unique monitor name (required for start/cancel)." })),
-			command: Type.Optional(Type.String({ description: "Shell command (bash -lc). Required for start." })),
-			mode: Type.Optional(Type.Union([Type.Literal("poll"), Type.Literal("exit")])),
+			name: Type.Optional(Type.String({ description: "Unique monitor name (required for start/cancel); shown on every event." })),
+			command: Type.Optional(Type.String({ description: "Shell command (zsh -lc). Required for start." })),
+			mode: Type.Optional(Type.Union([Type.Literal("stream"), Type.Literal("poll"), Type.Literal("exit")], { description: 'Default "stream".' })),
 			until: Type.Optional(Type.String({ description: "Poll mode: regex over output that means done. Default: exit code 0." })),
-			intervalSec: Type.Optional(Type.Number({ description: "Poll interval, default 30, min 5." })),
-			timeoutMin: Type.Optional(Type.Number({ description: "Give up and report after this many minutes, default 60." })),
+			intervalSec: Type.Optional(Type.Number({ description: "Poll mode interval, default 30, min 5." })),
+			timeoutMin: Type.Optional(Type.Number({ description: "Kill the command and report after this many minutes, default 60." })),
 			cwd: Type.Optional(Type.String({ description: "Working directory, default the session cwd." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const text = (body: string) => ({ content: [{ type: "text" as const, text: body }], details: undefined });
 			if (params.op === "list") {
 				const rows = monitors.list();
-				return text(rows.length ? rows.map(r => `${r.name} [${r.mode}] ${r.runs} runs, ${r.elapsedSec}s: ${r.command}${r.last ? `\n  last: ${r.last.split("\n").at(-1)}` : ""}`).join("\n") : "No monitors running.");
+				return text(rows.length ? rows.map(r => `${r.name} [${r.mode}] ${r.mode === "stream" ? `${r.events} events` : `${r.runs} runs`}, ${r.elapsedSec}s: ${r.command}${r.last ? `\n  last: ${r.last.split("\n").at(-1)}` : ""}`).join("\n") : "No monitors running.");
 			}
 			if (!params.name) throw new Error("`name` is required.");
 			if (params.op === "cancel") return text(monitors.cancel(params.name) ? `Cancelled monitor "${params.name}".` : `No monitor named "${params.name}".`);
@@ -1722,13 +1745,154 @@ export default function hydemods(pi: ExtensionAPI): void {
 				name: params.name,
 				command: params.command,
 				cwd: params.cwd ?? ctx.cwd,
-				mode: params.mode ?? "poll",
+				mode: params.mode ?? "stream",
 				until: params.until,
 				intervalSec: Math.max(5, params.intervalSec ?? 30),
 				timeoutMin: Math.max(0.1, params.timeoutMin ?? 60),
 			};
 			void monitors.start(spec);
-			return text(`Monitor "${spec.name}" started (${spec.mode}, timeout ${spec.timeoutMin}m). You will get a message when it settles; end your turn or continue other work — do not poll.`);
+			return text(
+				spec.mode === "stream"
+					? `Monitor "${spec.name}" started (stream, timeout ${spec.timeoutMin}m). Each output line arrives as a "Monitor event" message; end your turn or continue other work — do not poll.`
+					: `Monitor "${spec.name}" started (${spec.mode}, timeout ${spec.timeoutMin}m). You will get a message when it settles; end your turn or continue other work — do not poll.`,
+			);
+		},
+	});
+	pi.registerTool({
+		name: "call_model",
+		label: "Call Model",
+		description: "Call a configured model directly with a one-shot prompt and get its text back. `model` is provider/id, a bare id, or @role; an optional `:effort` suffix (minimal|low|medium|high|xhigh|max) sets thinking unless `thinking` is given.",
+		parameters: Type.Object({
+			model: Type.String({ description: "provider/id, bare id, or @role (e.g. @slow), optionally with :effort." }),
+			prompt: Type.String({ description: "User prompt sent to the model." }),
+			system: Type.Optional(Type.String({ description: "Optional system prompt." })),
+			thinking: Type.Optional(Type.Union(EFFORTS.map(e => Type.Literal(e)), { description: "Reasoning effort; omit for the model default." })),
+			maxTokens: Type.Optional(Type.Number({ description: "Maximum output tokens." })),
+		}),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const { text, details } = await callModel(ctx, params as CallModelParams, signal);
+			return { content: [{ type: "text" as const, text }], details };
+		},
+	});
+	pi.registerTool({
+		name: "agent_model",
+		label: "Agent Model",
+		description: "Override which model a task subagent type runs on, for this session only. `list` shows overrides; `set` needs `agent` (e.g. reviewer, task, scout) and `model`; `clear` removes the session override for `agent`.",
+		parameters: Type.Object({
+			op: Type.Union([Type.Literal("list"), Type.Literal("set"), Type.Literal("clear")]),
+			agent: Type.Optional(Type.String({ description: "Agent name; required for set/clear." })),
+			model: Type.Optional(Type.String({ description: "Model selector (provider/id, bare id, @role, optional :effort); required for set." })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const text = agentModel(ctx, hostOverrideSettings(), params as AgentModelParams);
+			return { content: [{ type: "text" as const, text }], details: undefined };
+		},
+	});
+	pi.registerTool({
+		name: "ror",
+		label: "Ready for Review",
+		description: [
+			"Ready-for-review digest of your open PRs, grouped by your stored review tiers and sent to you as a Slack DM.",
+			"A PR is ready when it is not a draft, one of the configured approvers' latest review approves the head commit, no reviewer's latest review requests changes, CI passes, no review threads are unresolved, and it has no merge conflicts.",
+			'op "send" (default) fetches fresh PR state and DMs the message to the Slack user the configured Slack MCP is signed in as; "preview" returns the same message without sending.',
+			'PRs in no tier are classified by a model against a risk rubric plus the guidance file, stored in their tier, and reported with the model\'s reason; failures stay under "Not tiered yet". Pass classify=false to skip. To correct a tier, use op "label" with `tier` and `prs` (owner/repo#N, #N or N): it moves them to the end of that tier and marks them as your ground truth.',
+			'op "watch" starts the "ror-watch" background monitor. It re-checks PRs every `intervalSec` (default 300) and wakes you only with changes. A changed PR gets a status line ("ROR", "closed or merged", or "not ROR: <blockers>") plus, when not ROR, one indented line per blocker with its link: failing and pending checks, each unresolved thread (path:line, author, comment snippet), change requests, and approver state. The first poll reports every PR. With `prs` it watches those and stops once all are ROR or closed. With `full: true` (no `prs`) it watches every open PR in the configured owners, including new ones, until `timeoutMin` (default 1440). A new watch replaces the running one. Cancel with monitor op "cancel", name "ror-watch".',
+			`Config and tiers live in ${rorConfigPath()}; classifier calibration lives in ${rorGuidancePath()}.`,
+		].join("\n"),
+		parameters: Type.Object({
+			op: Type.Optional(Type.Union([Type.Literal("send"), Type.Literal("preview"), Type.Literal("label"), Type.Literal("watch")], { description: 'Default "send".' })),
+			tier: Type.Optional(Type.String({ description: "Tier key; required for label." })),
+			prs: Type.Optional(Type.Array(Type.String(), { description: "label: PRs to move; watch: PRs to watch (omit with full). owner/repo#N, #N, or N when unambiguous." })),
+			full: Type.Optional(Type.Boolean({ description: "watch: watch all your open PRs in the configured owners instead of `prs`." })),
+			intervalSec: Type.Optional(Type.Number({ description: "watch: seconds between checks, minimum 30. Default 300." })),
+			timeoutMin: Type.Optional(Type.Number({ description: "watch: stop after this many minutes. Default 1440." })),
+			classify: Type.Optional(Type.Boolean({ description: "send/preview: classify ready PRs that are in no tier with the model. Default true." })),
+		}),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return { content: [{ type: "text" as const, text: await runRor(params, ctx, signal) }], details: undefined };
+		},
+	});
+	const RORWATCH_SCRIPT = fileURLToPath(new URL("./scripts/ror-watch.ts", import.meta.url));
+	type RorParams = { op?: "send" | "preview" | "label" | "watch"; tier?: string; prs?: string[]; full?: boolean; classify?: boolean; intervalSec?: number; timeoutMin?: number };
+	async function runRor(params: RorParams, ctx: ExtensionContext, signal?: AbortSignal): Promise<string> {
+		let config = await loadRorConfig();
+		const open = await fetchMyPrs();
+		if (params.op === "watch") {
+			if (Boolean(params.full) === Boolean(params.prs?.length)) throw new Error("watch needs either `prs` or `full: true`, not both.");
+			const keys = params.full ? [] : resolvePrRefs(params.prs!, open);
+			const intervalSec = Math.max(30, params.intervalSec ?? 300);
+			const timeoutMin = Math.max(1, params.timeoutMin ?? 1440);
+			const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+			void monitors.start({
+				name: "ror-watch",
+				command: ["bun", RORWATCH_SCRIPT, "--interval", String(intervalSec), ...(params.full ? ["--full"] : keys)].map(quote).join(" "),
+				cwd: ctx.cwd,
+				mode: "stream",
+				intervalSec,
+				timeoutMin,
+				// The first poll lists every PR with its blockers; the default 20-line event cap would cut it off.
+				maxEventLines: 500,
+			});
+			const what = params.full ? `all open PRs in ${config.owners?.join(", ") ?? "every repo"}` : `${keys.length} PRs (${keys.join(", ")})`;
+			return `Watching ${what} for ROR every ${intervalSec}s (monitor "ror-watch", timeout ${timeoutMin}m). Changes, with each blocker's link, arrive as "Monitor event" messages; do not poll.`;
+		}
+		if (params.op === "label") {
+			if (!params.tier || !params.prs?.length) throw new Error("label needs `tier` and `prs`.");
+			const keys = resolvePrRefs(params.prs, open);
+			await saveRorConfig(assignTier(config, params.tier, keys));
+			return `Moved ${keys.join(", ")} to the end of tier "${params.tier}" (now your ground truth).`;
+		}
+		const ready = readyPrs(open, config);
+		const tiered = new Set(config.tiers.flatMap((t) => t.prs));
+		const toClassify = ready.filter((pr) => !tiered.has(prKey(pr)));
+		let classified = "";
+		if (params.classify !== false && toClassify.length) {
+			const model = config.classifierModel ?? "@default:medium";
+			const examples = open.flatMap((pr) => {
+				const tier = config.tiers.find((t) => t.prs.includes(prKey(pr)));
+				return tier && !config.autoTiered?.[prKey(pr)] ? [{ key: prKey(pr), title: pr.title, tier: tier.key }] : [];
+			});
+			const results = await classifyPrs(toClassify, config, {
+				complete: (system, prompt) => callModel(ctx, { model, system, prompt }, signal).then((r) => r.text),
+				guidance: await loadGuidance(),
+				examples,
+			});
+			config = applyClassifications(config, results);
+			await saveRorConfig(config);
+			const labelOf = (key: string) => config.tiers.find((t) => t.key === key)?.label ?? key;
+			const lines = results.map((r) => ("error" in r ? `${r.key}: ${r.error}` : `${r.key} -> ${labelOf(r.tier)}: ${r.reason}`));
+			const failed = results.filter((r) => "error" in r).length;
+			classified = `\n\nClassified by ${model} (${results.length - failed} of ${results.length}; failures stay under "Not tiered yet"):\n${lines.join("\n")}\nTo correct a tier, use op "label" (it makes your choice ground truth).`;
+		}
+		const sections = groupByTier(ready, config.tiers);
+		const message = formatRorMessage(sections, config);
+		const untiered = sections.find((s) => s.tier === null)?.prs ?? [];
+		const untieredNote = untiered.length
+			? `\n\nNot tiered yet (agree a tier with the user, then op "label"):\n${untiered.map((pr) => `${prKey(pr)} ${pr.title} | +${pr.additions}/-${pr.deletions}, ${pr.changedFiles} files`).join("\n")}`
+			: "";
+		if (params.op === "preview") return message + classified + untieredNote;
+		const links = await sendSelfDm(config.slackServer, message);
+		return `Sent ${ready.length} ready PRs to your Slack DM: ${links.join(" ")}${classified}${untieredNote}`;
+	}
+	pi.registerCommand("ror", {
+		description: "Send your [ROR] PRs to your Slack DM, tiering new ones. /ror preview, /ror raw (skip the model), /ror label <tier> <#N...>, /ror watch <#N...> | --full",
+		handler: async (args, ctx) => {
+			const [first, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+			const params: RorParams =
+				first === "label"
+					? { op: "label", tier: rest[0], prs: rest.slice(1) }
+					: first === "watch"
+						? rest.includes("--full")
+							? { op: "watch", full: true }
+							: { op: "watch", prs: rest }
+						: { op: first === "preview" ? "preview" : "send", classify: !rest.includes("raw") && first !== "raw" };
+			if (ctx.hasUI) ctx.ui.notify(params.op === "label" ? "Updating tiers…" : params.op === "watch" ? "Starting ROR watch…" : "Fetching [ROR] PRs…", "info");
+			try {
+				const result = await runRor(params, ctx);
+				pi.sendMessage({ customType: "hydemods-ror", display: true, content: result, details: undefined });
+			} catch (err) {
+				if (ctx.hasUI) ctx.ui.notify(`ror failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+			}
 		},
 	});
 	// One handler per session event, each running the per-feature session work in a fixed order.

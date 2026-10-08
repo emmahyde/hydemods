@@ -187,9 +187,12 @@ export function withVaultDrawer(inner: EditorProvider, enabled: () => boolean): 
 /*                                    pr://                                   */
 /* -------------------------------------------------------------------------- */
 
+export type PrReview = { login: string; state: string; onHead: boolean };
+
 export type MyPr = {
  number: number;
  title: string;
+ url: string;
  repo: string;
  isDraft: boolean;
  ci: "pass" | "fail" | "pending" | "none";
@@ -197,32 +200,44 @@ export type MyPr = {
  mergeable: "clean" | "conflicts" | "unknown";
  /** null when no approver pattern is configured, so the status column is omitted. */
  approved: boolean | null;
+ /** Each reviewer's latest review; `onHead` is true when it was left on the current head commit. */
+ reviews: PrReview[];
+ additions: number;
+ deletions: number;
+ changedFiles: number;
 };
 
 export type GqlPr = {
  number: number;
  title: string;
+ url: string;
  isDraft: boolean;
  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+ headRefOid: string;
+ additions: number;
+ deletions: number;
+ changedFiles: number;
  repository: { nameWithOwner: string; owner: { login: string } };
  reviewThreads: { nodes: Array<{ isResolved: boolean }> };
- latestReviews: { nodes: Array<{ state: string; author: { login: string } | null }> };
+ latestReviews: { nodes: Array<{ state: string; author: { login: string } | null; commit: { oid: string } | null }> };
  commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
 };
 
 const PR_FRESH_MS = 60_000;
 const PR_RETRY_MS = 15_000;
 
-// viewer.pullRequests is "PRs I authored", so no username lookup is needed. Bounded work:
-// 100 PRs x (100 threads + 20 reviews) stays far under GitHub's node limit.
-const PR_QUERY = `query {
-  viewer {
-    pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      nodes {
-        number title isDraft mergeable
+// Search rather than viewer.pullRequests: the viewer connection silently omits some PRs (seen with an
+// org-internal repo) that search returns. 50 per page: a 100-PR page takes ~8s and intermittently
+// hits GitHub's 10s gateway timeout (HTTP 502).
+const PR_QUERY = `query($after: String) {
+  search(type: ISSUE, query: "is:pr is:open author:@me archived:false sort:updated-desc", first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number title url isDraft mergeable headRefOid additions deletions changedFiles
         repository { nameWithOwner owner { login } }
         reviewThreads(first: 100) { nodes { isResolved } }
-        latestReviews(first: 20) { nodes { state author { login } } }
+        latestReviews(first: 20) { nodes { state author { login } commit { oid } } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
     }
@@ -232,15 +247,21 @@ const PR_QUERY = `query {
 /** Project one GraphQL node. `approver` matches the login of a reviewer whose approval should be surfaced. */
 export function toMyPr(pr: GqlPr, approver: RegExp | undefined): MyPr {
  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state;
+ const reviews = pr.latestReviews.nodes.map((r) => ({ login: r.author?.login ?? "", state: r.state, onHead: r.commit?.oid === pr.headRefOid }));
  return {
   number: pr.number,
   title: pr.title,
+  url: pr.url,
   repo: pr.repository.nameWithOwner,
   isDraft: pr.isDraft,
   ci: !rollup ? "none" : rollup === "SUCCESS" ? "pass" : rollup === "FAILURE" || rollup === "ERROR" ? "fail" : "pending",
   unresolvedThreads: pr.reviewThreads.nodes.filter((t) => !t.isResolved).length,
   mergeable: pr.mergeable === "MERGEABLE" ? "clean" : pr.mergeable === "CONFLICTING" ? "conflicts" : "unknown",
-  approved: approver ? pr.latestReviews.nodes.some((r) => r.state === "APPROVED" && approver.test(r.author?.login ?? "")) : null,
+  approved: approver ? reviews.some((r) => r.state === "APPROVED" && approver.test(r.login)) : null,
+  reviews,
+  additions: pr.additions,
+  deletions: pr.deletions,
+  changedFiles: pr.changedFiles,
  };
 }
 
@@ -321,24 +342,34 @@ export function prCompletions(token: string, prs: readonly MyPr[], width = proce
 //   HYDEMODS_PR_OWNERS=org1,org2   restrict to those repo owners
 //   HYDEMODS_PR_APPROVER=<regex>   case-insensitive match on a reviewer login (bots appear without "[bot]");
 //                                  adds an "approved" column that lights up when that reviewer's latest review approves
-function ghMyPrs(): Promise<MyPr[]> {
- const owners = (process.env.HYDEMODS_PR_OWNERS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
- const approverSource = process.env.HYDEMODS_PR_APPROVER?.trim();
- const approver = approverSource ? new RegExp(approverSource, "i") : undefined;
- const { promise, resolve, reject } = Promise.withResolvers<MyPr[]>();
- execFile("gh", ["api", "graphql", "-f", `query=${PR_QUERY}`], { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+function ghPrPage(after: string | null): Promise<{ nodes: GqlPr[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }> {
+ const args = ["api", "graphql", "-f", `query=${PR_QUERY}`, ...(after ? ["-f", `after=${after}`] : [])];
+ const { promise, resolve, reject } = Promise.withResolvers<{ nodes: GqlPr[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }>();
+ execFile("gh", args, { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
   if (err) return reject(err);
   try {
    // Shape is fixed by PR_QUERY above; a mismatch throws into the catch and backs off.
-   const response: { data: { viewer: { pullRequests: { nodes: GqlPr[] } } } } = JSON.parse(stdout);
-   const nodes = response.data.viewer.pullRequests.nodes;
-   const scoped = owners.length === 0 ? nodes : nodes.filter((n) => owners.includes(n.repository.owner.login.toLowerCase()));
-   resolve(scoped.map((n) => toMyPr(n, approver)));
+   resolve(JSON.parse(stdout).data.search);
   } catch (parseErr) {
    reject(parseErr);
   }
  });
  return promise;
+}
+
+async function ghMyPrs(): Promise<MyPr[]> {
+ const owners = (process.env.HYDEMODS_PR_OWNERS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+ const approverSource = process.env.HYDEMODS_PR_APPROVER?.trim();
+ const approver = approverSource ? new RegExp(approverSource, "i") : undefined;
+ const nodes: GqlPr[] = [];
+ let after: string | null = null;
+ do {
+  const page = await ghPrPage(after);
+  nodes.push(...page.nodes);
+  after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+ } while (after);
+ const scoped = owners.length === 0 ? nodes : nodes.filter((n) => owners.includes(n.repository.owner.login.toLowerCase()));
+ return scoped.map((n) => toMyPr(n, approver));
 }
 
 // Stale-while-revalidate: the query takes seconds, far too slow to block every keystroke.
@@ -359,6 +390,13 @@ export function refreshMyPrs(): Promise<void> {
    prInflight = undefined;
   });
  return prInflight;
+}
+
+/** Fetches every open PR now, bypassing the drawer's cache (and refreshing it). Errors propagate. */
+export async function fetchMyPrs(): Promise<MyPr[]> {
+ const prs = await ghMyPrs();
+ prCache = { at: Date.now(), prs };
+ return prs;
 }
 
 async function getMyPrs(signal?: AbortSignal): Promise<MyPr[]> {

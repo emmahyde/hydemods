@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ExecFn, formatMonitorResult, type MonitorResult, MonitorRegistry, type MonitorSpec } from "../lib/monitors";
+import { type ExecFn, formatMonitorResult, type MonitorResult, MonitorRegistry, type MonitorSpec, spawnStream, type StreamFn } from "../lib/monitors";
 
 const spec = (overrides: Partial<MonitorSpec> = {}): MonitorSpec => ({
 	name: "ci",
@@ -25,6 +25,7 @@ function harness(outputs: { code: number; stdout: string }[]) {
 	const registry = new MonitorRegistry({
 		exec,
 		notify: (s, result) => notified.push({ spec: s, result }),
+		emit: () => { },
 		now: () => clock,
 		sleep: async ms => { clock += ms; },
 	});
@@ -73,6 +74,7 @@ describe("monitors", () => {
 				return promise;
 			},
 			notify: s => notified.push(s.command),
+			emit: () => { },
 		});
 		const first = registry.start(spec({ command: "old" }));
 		const second = registry.start(spec({ command: "new" }));
@@ -88,12 +90,81 @@ describe("monitors", () => {
 	});
 
 	test("a command that cannot run reports an error instead of retrying", async () => {
-		const registry = new MonitorRegistry({ exec: async () => { throw new Error("spawn bash ENOENT"); }, notify: () => { } });
+		const registry = new MonitorRegistry({ exec: async () => { throw new Error("spawn bash ENOENT"); }, notify: () => { }, emit: () => { } });
 		expect(await registry.start(spec())).toMatchObject({ outcome: "error", output: "spawn bash ENOENT" });
 	});
 
 	test("rejects an invalid regex at start", () => {
 		const h = harness([{ code: 0, stdout: "" }]);
 		expect(() => h.registry.start(spec({ until: "(" }))).toThrow();
+	});
+
+	describe("stream mode", () => {
+		/** A scripted watcher: `feed` pushes stdout lines, `finish` exits. */
+		function streamHarness(batchMs = 5) {
+			const events: string[][] = [];
+			const notified: MonitorResult[] = [];
+			let onLine!: (line: string) => void;
+			let finish!: (code: number) => void;
+			const stream: StreamFn = (_c, _cwd, signal, cb) => {
+				onLine = cb;
+				const { promise, resolve } = Promise.withResolvers<{ code: number; stderr: string }>();
+				finish = code => resolve({ code, stderr: "" });
+				signal.addEventListener("abort", () => resolve({ code: 143, stderr: "" }));
+				return promise;
+			};
+			const registry = new MonitorRegistry({ exec: async () => ({ code: 0, stdout: "", stderr: "" }), stream, batchMs, notify: (_s, r) => notified.push(r), emit: (_s, lines) => events.push(lines) });
+			return { registry, events, notified, feed: (line: string) => onLine(line), finish: (code: number) => finish(code) };
+		}
+
+		test("each burst of lines wakes the agent once, then the exit is reported", async () => {
+			const h = streamHarness();
+			const done = h.registry.start(spec({ mode: "stream" }));
+			h.feed("Watching PR #1787");
+			h.feed("");
+			await Bun.sleep(20);
+			h.feed("scanner: pass");
+			h.feed("buildkite: pending");
+			await Bun.sleep(20);
+			expect(h.events).toEqual([["Watching PR #1787"], ["scanner: pass", "buildkite: pending"]]);
+			expect(h.notified).toHaveLength(0);
+			expect(h.registry.list()[0]).toMatchObject({ events: 2, last: "buildkite: pending" });
+			h.feed("buildkite: pass");
+			h.finish(0);
+			expect(await done).toMatchObject({ outcome: "exited", code: 0, events: 3 });
+			expect(h.events.at(-1)).toEqual(["buildkite: pass"]);
+			expect(h.notified).toHaveLength(1);
+		});
+
+		test("timeout kills the watcher and reports timed-out", async () => {
+			const h = streamHarness();
+			const result = await h.registry.start(spec({ mode: "stream", timeoutMin: 0.0005 }));
+			expect(result).toMatchObject({ outcome: "timed-out", code: undefined });
+			expect(h.notified).toHaveLength(1);
+		});
+
+		test("a cancelled watcher emits nothing further and never reports", async () => {
+			const h = streamHarness(50);
+			const done = h.registry.start(spec({ mode: "stream" }));
+			h.feed("queued before cancel");
+			h.registry.cancel("ci");
+			expect(await done).toBeUndefined();
+			await Bun.sleep(60);
+			expect(h.events).toEqual([]);
+			expect(h.notified).toEqual([]);
+		});
+
+		test("spawnStream delivers lines live and kills the whole process group on abort", async () => {
+			const lines: string[] = [];
+			const controller = new AbortController();
+			const done = spawnStream("echo first; sleep 30 | cat; echo never", "/tmp", controller.signal, line => lines.push(line));
+			while (!lines.length) await Bun.sleep(10);
+			expect(lines).toEqual(["first"]);
+			const started = Date.now();
+			controller.abort();
+			await done;
+			expect(Date.now() - started).toBeLessThan(2000);
+			expect(lines).toEqual(["first"]);
+		});
 	});
 });

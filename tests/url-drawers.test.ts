@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prCompletions, prStatusCells, toMyPr, vaultCompletions, withPrDrawer, withVaultDrawer, type EditorProvider, type GqlPr, type MyPr } from "../lib/url-drawers";
 
-const pr = (over: Partial<MyPr>): MyPr => ({ number: 1, title: "t", repo: "o/r", isDraft: false, ci: "pass", unresolvedThreads: 0, mergeable: "clean", approved: null, ...over });
+const pr = (over: Partial<MyPr>): MyPr => ({ number: 1, title: "t", url: "u", repo: "o/r", isDraft: false, ci: "pass", unresolvedThreads: 0, mergeable: "clean", approved: null, reviews: [], additions: 0, deletions: 0, changedFiles: 0, ...over });
 
 const gql = (over: Partial<GqlPr> = {}): GqlPr => ({
 	number: 7,
 	title: "t",
+	url: "https://github.com/o/r/pull/7",
 	isDraft: false,
 	mergeable: "MERGEABLE",
+	headRefOid: "head",
+	additions: 0,
+	deletions: 0,
+	changedFiles: 0,
 	repository: { nameWithOwner: "o/r", owner: { login: "o" } },
 	reviewThreads: { nodes: [] },
 	latestReviews: { nodes: [] },
@@ -72,13 +77,17 @@ test("status maps CI rollup states and counts only unresolved threads", () => {
 });
 
 test("approval column appears only when an approver is configured and matches the latest approving reviewer", () => {
-	const reviews = { latestReviews: { nodes: [{ state: "APPROVED", author: { login: "Review-Bot" } }, { state: "COMMENTED", author: { login: "alice" } }] } };
+	const reviews = { latestReviews: { nodes: [{ state: "APPROVED", author: { login: "Review-Bot" }, commit: { oid: "head" } }, { state: "COMMENTED", author: { login: "alice" }, commit: { oid: "old" } }] } };
 	const approver = /^review-bot$/i;
 
 	expect(toMyPr(gql(reviews), undefined).approved).toBeNull();
 	expect(toMyPr(gql(reviews), approver).approved).toBe(true);
-	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "COMMENTED", author: { login: "review-bot" } }] } }), approver).approved).toBe(false);
-	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "APPROVED", author: null }] } }), approver).approved).toBe(false);
+	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "COMMENTED", author: { login: "review-bot" }, commit: null }] } }), approver).approved).toBe(false);
+	expect(toMyPr(gql({ latestReviews: { nodes: [{ state: "APPROVED", author: null, commit: null }] } }), approver).approved).toBe(false);
+	expect(toMyPr(gql(reviews), undefined).reviews).toEqual([
+		{ login: "Review-Bot", state: "APPROVED", onHead: true },
+		{ login: "alice", state: "COMMENTED", onHead: false },
+	]);
 
 	expect(prStatusCells(pr({ approved: null }))).toEqual(["✓ CI", "✓ threads", "✓ mergeable"]);
 	expect(prStatusCells(pr({ approved: true, ci: "fail", unresolvedThreads: 3, mergeable: "conflicts" }))).toEqual(["✗ CI", "✗ 3 unresolved", "✗ conflicts", "✓ approved"]);

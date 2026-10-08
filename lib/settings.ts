@@ -1,5 +1,6 @@
 import { lookup, register, type Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { isSettingsInitialized, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AGENT_MODEL_OVERRIDES_PATH as PATH, type AgentModelOverrides, type OverrideSettings } from "./model-tools";
 
 export { settings };
 
@@ -48,4 +49,18 @@ export function readSetting<T>(setting: Setting<T>): T {
 export function watchSetting<T>(setting: Setting<T>, onChange: (value: T) => void): () => void {
 	if (!isSettingsInitialized()) return () => {};
 	return setting.listen(settings, value => onChange(value));
+}
+
+/**
+ * The host's settings store has no path-based `get`/`override`; values are reached through the
+ * registry handle for the path, the same way the rest of hydemods reads host settings.
+ */
+export function hostOverrideSettings(): OverrideSettings {
+	const setting = lookup(PATH) as Setting<AgentModelOverrides> | undefined;
+	if (!setting) throw new Error(`This OMP build has no "${PATH}" setting.`);
+	return {
+		get: () => setting.get(settings),
+		override: (_path, value) => setting.override(settings, value),
+		clearOverride: () => setting.clearOverride(settings),
+	};
 }
