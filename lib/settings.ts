@@ -40,6 +40,24 @@ export function integerSetting(name: string, label: string, description: string,
 	});
 }
 
+/** Registers a persisted string under `hydemods.<camelName>`; `validate` throws to reject a value. */
+export function stringSetting(name: string, label: string, description: string, fallback: string, validate?: (value: string) => void): Setting<string> {
+	const id = settingId(name);
+	const existing = lookup(id);
+	if (existing) return existing as Setting<string>;
+	return register({
+		id,
+		type: "string",
+		default: fallback,
+		validate: raw => {
+			if (raw === undefined) return;
+			if (typeof raw !== "string") throw new Error(`${id} must be a string`);
+			validate?.(raw);
+		},
+		ui: { tab: "tools", label, description },
+	});
+}
+
 /** Current value, or the setting's default before the settings store is initialized. */
 export function readSetting<T>(setting: Setting<T>): T {
 	return isSettingsInitialized() ? setting.get(settings) : (setting.default as T);
@@ -47,7 +65,7 @@ export function readSetting<T>(setting: Setting<T>): T {
 
 /** Observes changes from any source (panel, command, or a hand edit of settings.yaml). */
 export function watchSetting<T>(setting: Setting<T>, onChange: (value: T) => void): () => void {
-	if (!isSettingsInitialized()) return () => {};
+	if (!isSettingsInitialized()) return () => { };
 	return setting.listen(settings, value => onChange(value));
 }
 

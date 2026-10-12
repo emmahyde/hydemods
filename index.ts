@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
+import { AssistantMessageComponent, ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +26,8 @@ import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settin
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
-import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, watchSetting } from "./lib/settings";
+import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
+import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { fetchMyPrs, refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
 import { applyClassifications, assignTier, formatRorMessage, groupByTier, loadRorConfig, prKey, readyPrs, resolvePrRefs, rorConfigPath, saveRorConfig, sendSelfDm } from "./lib/ror";
 import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
@@ -45,7 +46,7 @@ type StallMessageDetails = Pick<StallAlert, "agentName" | "kind" | "idleMinutes"
 // Subagents never outlive the OMP process, so transcripts untouched since load are dead, not stalled.
 const WATCH_STARTED_AT = Date.now();
 
-type TweakCategory = "Interface";
+type TweakCategory = "Interface" | "Colors" | "Tools" | "Safeguards";
 
 type TweakDef = {
 	name: string;
@@ -121,6 +122,41 @@ const TWEAK_DEFS: TweakDef[] = [
 			return `Model: alert at ${modelStallMinutes}m. Subagent tool calls: check in at ${toolStageMinutes[0]}m, alert at ${toolStageMinutes.slice(1, -1).join("/") || "-"}m, abort at ${toolStageMinutes.at(-1)}m.`;
 		},
 	},
+	{
+		name: "monitor-tool",
+		title: "monitor tool",
+		description: "Gives the agent the monitor tool: background shell watchers that wake it on events instead of polling.",
+		category: "Tools",
+		render: () => "Off removes the tool from the active set; running monitors (including ror-watch) keep going.",
+	},
+	{
+		name: "call-model-tool",
+		title: "call_model tool",
+		description: "Gives the agent call_model: a one-shot prompt to any configured model, returning its text.",
+		category: "Tools",
+		render: () => "Also used by /ror classification, which is not affected by this toggle.",
+	},
+	{
+		name: "agent-model-tool",
+		title: "agent_model tool",
+		description: "Gives the agent agent_model: override which model a task subagent type runs on, for the session.",
+		category: "Tools",
+		render: () => "Overrides are session-only.",
+	},
+	{
+		name: "ror",
+		title: "ror tool and /ror command",
+		description: "Ready-for-review digest of your open PRs to a Slack DM, with tiers, labels, and watch.",
+		category: "Tools",
+		render: () => "Off removes the ror tool and makes /ror a no-op. Config and tiers live in the ror.json file.",
+	},
+	{
+		name: "runaway-edit-guard",
+		title: "Runaway edit guard",
+		description: "Aborts a streaming edit call stuck repeating apply_patch end markers and tells the agent to retry small.",
+		category: "Safeguards",
+		render: () => "Triggers on 3+ \"*** End Patch\" markers or an edit input over 96 KB.",
+	},
 ];
 
 const TWEAKS: Tweak[] = TWEAK_DEFS.map(def => ({ ...def, setting: booleanSetting(def.name, def.title, def.description) }));
@@ -130,7 +166,7 @@ const isTweakEnabled = (name: string): boolean => {
 	return tweak ? readSetting(tweak.setting) : false;
 };
 
-const CATEGORIES: readonly TweakCategory[] = ["Interface"];
+const CATEGORIES: readonly TweakCategory[] = ["Interface", "Colors", "Tools", "Safeguards"];
 
 type ThemeLike = {
 	fg: (color: ThemeColor, text: string) => string;
@@ -1198,6 +1234,18 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 	}
 }
 
+// Preset name plus an optional #rrggbb override per surface; the hex wins when set.
+const BG_SETTINGS = Object.fromEntries(SURFACES.map((surface) => [surface, {
+	preset: stringSetting(`${surface}-bg`, SURFACE_LABELS[surface], `Preset tint behind ${SURFACE_LABELS[surface].toLowerCase().replace(" background", "s")}. "off" keeps the theme color.`, "off", (name) => {
+		if (!BG_PRESETS.some((preset) => preset.name === name)) throw new Error(`hydemods.${surface}Bg must be one of: ${BG_PRESETS.map((preset) => preset.name).join(", ")}`);
+	}),
+	hex: stringSetting(`${surface}-bg-hex`, `${SURFACE_LABELS[surface]} (hex)`, "A #rrggbb color that overrides the preset. Empty clears it.", "", (value) => {
+		if (value !== "" && !isHexColor(value)) throw new Error(`hydemods.${surface}BgHex must be #rrggbb or empty`);
+	}),
+}])) as Record<Surface, { preset: Setting<string>; hex: Setting<string> }>;
+
+const BG_ROWS: readonly { surface: Surface }[] = SURFACES.map((surface) => ({ surface }));
+
 const COLLAPSED_LINE_PRESETS = [1, 3, 5, 10];
 
 // The collapsed-lines control is a row in the panel's selection order (after the Interface
@@ -1205,10 +1253,9 @@ const COLLAPSED_LINE_PRESETS = [1, 3, 5, 10];
 const COLLAPSED_LINES_ROW = Symbol("collapsed-lines");
 
 function panelComponent(theme: ThemeLike, done: (result: undefined) => void, display: ToolDisplayState, onToggle?: () => void) {
-	const groups: Record<TweakCategory, readonly Tweak[]> = {
-		Interface: TWEAKS.filter((tweak) => tweak.category === "Interface"),
-	};
-	const selectable: Array<Tweak | typeof COLLAPSED_LINES_ROW> = [...groups.Interface, COLLAPSED_LINES_ROW];
+	const groups = Object.fromEntries(CATEGORIES.map((category) => [category, TWEAKS.filter((tweak) => tweak.category === category)])) as Record<TweakCategory, readonly Tweak[]>;
+	type PanelRow = Tweak | typeof COLLAPSED_LINES_ROW | (typeof BG_ROWS)[number];
+	const selectable = CATEGORIES.flatMap<PanelRow>((category) => category === "Interface" ? [...groups[category], COLLAPSED_LINES_ROW] : category === "Colors" ? [...BG_ROWS] : groups[category]);
 	const body = new Box(2, 1);
 	const content = new Text();
 	let selectedIndex = 0;
@@ -1224,6 +1271,17 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 			` ${marker} ${chooser}  ${theme.bold("Collapsed card lines")}`,
 			theme.fg("muted", "           Lines a collapsed tool card shows before the omission marker."),
 			"           ←/→ pick a preset; +/- step by one; also /hydemods collapsed-lines N.",
+		];
+	};
+
+	const bgRow = (row: (typeof BG_ROWS)[number], selected: boolean): string[] => {
+		const marker = selected ? theme.fg("accent", "❯") : " ";
+		const preset = readSetting(BG_SETTINGS[row.surface].preset);
+		const hex = readSetting(BG_SETTINGS[row.surface].hex);
+		const chooser = BG_PRESETS.map((candidate) => candidate.name === preset ? theme.fg("accent", theme.bold(`[${candidate.name}]`)) : theme.fg("muted", ` ${candidate.name} `)).join(theme.fg("muted", "·"));
+		return [
+			` ${marker} ${chooser}  ${theme.bold(SURFACE_LABELS[row.surface])}`,
+			theme.fg("muted", isHexColor(hex) ? `           Hex ${hex} from settings.yaml wins over the preset.` : `           ←/→ or Space picks a preset; hydemods.${row.surface}BgHex in settings.yaml sets any #rrggbb.`),
 		];
 	};
 
@@ -1245,12 +1303,13 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 				lines.push(theme.fg("muted", `           ${tweak.description}`));
 				lines.push(`           ${tweak.render()}`);
 			}
-			lines.push(...collapsedLinesRow(selectable[selectedIndex] === COLLAPSED_LINES_ROW));
+			if (category === "Interface") lines.push(...collapsedLinesRow(selectable[selectedIndex] === COLLAPSED_LINES_ROW));
+			if (category === "Colors") for (const row of BG_ROWS) lines.push(...bgRow(row, selectable[selectedIndex] === row));
 			lines.push("");
 		}
 
 		lines.push(theme.fg("border", "────────────────────────────────────────"));
-		lines.push(theme.fg("muted", "↑/↓ or j/k select  ·  Space/Enter toggle or cycle  ·  ←/→ or +/- collapsed lines  ·  Esc/q close"));
+		lines.push(theme.fg("muted", "↑/↓ or j/k select  ·  Space/Enter toggle or cycle  ·  ←/→ cycle preset  ·  +/- collapsed lines  ·  Esc/q close"));
 		content.setText(lines.join("\n"));
 		body.invalidate();
 	};
@@ -1269,8 +1328,21 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 		onToggle?.();
 	};
 
+	const cycleBg = (surface: Surface, direction: 1 | -1) => {
+		const names = BG_PRESETS.map((candidate) => candidate.name);
+		const current = Math.max(0, names.indexOf(readSetting(BG_SETTINGS[surface].preset)));
+		BG_SETTINGS[surface].preset.set(settings, names[(current + direction + names.length) % names.length]);
+		paint();
+		onToggle?.();
+	};
+
 	// Presets in order; a custom value steps to the next preset above it (or wraps).
 	const cyclePreset = (direction: 1 | -1) => {
+		const selectedRow = selectable[selectedIndex];
+		if (typeof selectedRow === "object" && "surface" in selectedRow) {
+			cycleBg(selectedRow.surface, direction);
+			return;
+		}
 		const current = COLLAPSED_LINE_PRESETS.indexOf(display.collapsedLines);
 		if (current >= 0) {
 			setCollapsedLines(COLLAPSED_LINE_PRESETS[(current + direction + COLLAPSED_LINE_PRESETS.length) % COLLAPSED_LINE_PRESETS.length]);
@@ -1283,6 +1355,10 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 
 	const toggleSelected = () => {
 		const row = selectable[selectedIndex];
+		if (typeof row === "object" && "surface" in row) {
+			cycleBg(row.surface, 1);
+			return;
+		}
 		if (row === COLLAPSED_LINES_ROW) {
 			cyclePreset(1);
 			return;
@@ -1353,8 +1429,27 @@ export default function hydemods(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
 	};
 	let lastCtx: ExtensionContext | undefined;
+	// Prompt, response, and tool call backgrounds. The Theme and assistant component are wrapped once
+	// a session exists (the live theme is not initialized when the extension loads).
+	let backgroundsInstalled = false;
+	const ensureBackgrounds = () => {
+		if (backgroundsInstalled) return;
+		backgroundsInstalled = true;
+		installMessageBackgrounds(Object.getPrototypeOf(uiTheme) as ThemeLookups, AssistantMessageComponent.prototype, {
+			hexFor: (surface, light) => resolveBackground(readSetting(BG_SETTINGS[surface].preset), readSetting(BG_SETTINGS[surface].hex), light),
+			liveTheme: () => uiTheme as unknown as ThemeLookups,
+		});
+	};
+	for (const surface of SURFACES) {
+		for (const setting of [BG_SETTINGS[surface].preset, BG_SETTINGS[surface].hex]) {
+			watchSetting(setting, () => {
+				if (lastCtx) repaintToolCards(lastCtx);
+			});
+		}
+	}
 	const restoreToolDisplay = (ctx: ExtensionContext) => {
 		lastCtx = ctx;
+		ensureBackgrounds();
 		display.collapsedLines = readSetting(collapsedLinesSetting);
 		repaintToolCards(ctx);
 	};
@@ -1569,7 +1664,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// cap (~38 min). Abort the turn as soon as the pattern shows and tell the agent to retry small.
 	let guardedTimestamp: number | undefined;
 	const guardRunawayEdit = (message: MessageUpdateEvent["message"], ctx: ExtensionContext) => {
-		if (message.role !== "assistant" || guardedTimestamp === message.timestamp) return;
+		if (!isTweakEnabled("runaway-edit-guard") || message.role !== "assistant" || guardedTimestamp === message.timestamp) return;
 		const runaway = runawayEdit(message.content);
 		if (!runaway) return;
 		guardedTimestamp = message.timestamp;
@@ -1877,6 +1972,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.registerCommand("ror", {
 		description: "Send your [ROR] PRs to your Slack DM, tiering new ones. /ror preview, /ror raw (skip the model), /ror label <tier> <#N...>, /ror watch <#N...> | --full",
 		handler: async (args, ctx) => {
+			if (!isTweakEnabled("ror")) {
+				if (ctx.hasUI) ctx.ui.notify("ror is turned off in the hydemods panel.", "warning");
+				return;
+			}
 			const [first, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			const params: RorParams =
 				first === "label"
@@ -1895,6 +1994,24 @@ export default function hydemods(pi: ExtensionAPI): void {
 			}
 		},
 	});
+	// Settings-gated tools: off removes them from the active set; on restores only what this sync removed,
+	// so tools the user deactivated by other means stay off.
+	const GATED_TOOLS: Record<string, string> = { "monitor-tool": "monitor", "call-model-tool": "call_model", "agent-model-tool": "agent_model", ror: "ror" };
+	const removedByUs = new Set<string>();
+	const syncGatedTools = () => {
+		const active = pi.getActiveTools();
+		const next = [...active];
+		for (const [tweak, tool] of Object.entries(GATED_TOOLS)) {
+			if (isTweakEnabled(tweak)) {
+				if (removedByUs.delete(tool) && !next.includes(tool)) next.push(tool);
+			} else if (next.includes(tool)) {
+				next.splice(next.indexOf(tool), 1);
+				removedByUs.add(tool);
+			}
+		}
+		if (next.length !== active.length || next.some((tool, i) => tool !== active[i])) void pi.setActiveTools(next);
+	};
+	for (const tweak of TWEAKS) if (tweak.name in GATED_TOOLS) watchSetting(tweak.setting, syncGatedTools);
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
 		stopStallWatch?.();
@@ -1928,6 +2045,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			check();
 		}
 		installDrawers(ctx);
+		syncGatedTools();
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
 		latestThought = latestSessionThought(ctx);

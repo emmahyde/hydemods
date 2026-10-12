@@ -23,6 +23,11 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
 - **Runaway edit guard.** An `edit` call stops when its input repeats `*** End Patch` three times or passes 96 KB. The agent then retries with small hashline ops.
+- **Tool toggles.** `/hydemods` also switches the `monitor`, `call_model`, `agent_model`, and `ror` tools. Off removes the tool from the active set. Off for `ror` also turns `/ror` into a no-op. The runaway edit guard has its own toggle too. All default to on.
+- **Message backgrounds.** `/hydemods` has a Colors section with a preset row each for prompts, responses, and tool calls (`off`, `slate`, `blue`, `green`, `amber`, `purple`, `rose`). `off` keeps your theme color, and it is the default.
+  - Presets pick a dark or light tint to match your theme. To use any color, set `hydemods.userBgHex`, `hydemods.assistantBgHex`, or `hydemods.toolBgHex` to `#rrggbb` in `settings.yaml`. A hex wins over the preset.
+  - The tool color covers pending and successful calls. Failed calls stay red.
+  - Lines already in your terminal scrollback keep their old color.
 - **`vault://` drawer.** Lists your Obsidian vaults, then their folders and notes.
 - **`pr://` drawer.** Lists your open PRs with CI state, unresolved threads, and conflicts. It needs an authenticated [`gh`](https://cli.github.com).
   - `HYDEMODS_PR_OWNERS=org1,org2` limits the list to those owners.
