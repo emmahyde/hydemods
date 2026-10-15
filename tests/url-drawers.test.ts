@@ -151,3 +151,18 @@ test("picking a vault folder keeps the cursor inside the URL; a file or PR ends 
 	// Cursor sits right after the token; text following it is preserved.
 	expect(prs.applyCompletion([prLine], 0, 13, { value: "pr://o/r/7", label: "#7" }, "pr://7")).toEqual({ lines: ["review pr://o/r/7  please"], cursorLine: 0, cursorCol: 18 });
 });
+
+test("withVaultDrawer and withPrDrawer invoke onApplied callback upon token insertion", () => {
+	let appliedVault: string | undefined;
+	let appliedPr: string | undefined;
+	const vault = withVaultDrawer(inner(), () => true, item => { appliedVault = item.value; });
+	const prs = withPrDrawer(inner(), () => true, item => { appliedPr = item.value; });
+
+	const vRes = vault.applyCompletion(["vault://v/Fo"], 0, 12, { value: "vault://v/Fo.md", label: "Fo.md" }, "vault://v/Fo");
+	vRes.onApplied?.();
+	expect(appliedVault).toBe("vault://v/Fo.md");
+
+	const pRes = prs.applyCompletion(["pr://7"], 0, 6, { value: "pr://o/r/7", label: "#7" }, "pr://7");
+	pRes.onApplied?.();
+	expect(appliedPr).toBe("pr://o/r/7");
+});

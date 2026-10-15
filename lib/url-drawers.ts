@@ -13,7 +13,7 @@ import * as path from "node:path";
 // Mirrors OMP's editor-provider contract. Only these two methods are overridden.
 export type CompletionItem = { value: string; label: string; description?: string };
 export type CompletionResult = { items: CompletionItem[]; prefix: string } | null;
-export type AppliedCompletion = { lines: string[]; cursorLine: number; cursorCol: number };
+export type AppliedCompletion = { lines: string[]; cursorLine: number; cursorCol: number; onApplied?: () => void };
 export type EditorProvider = {
  getSuggestions(lines: string[], line: number, col: number, signal?: AbortSignal, onPartial?: unknown): Promise<CompletionResult>;
  applyCompletion(lines: string[], line: number, col: number, item: CompletionItem, prefix: string): AppliedCompletion;
@@ -25,7 +25,7 @@ const DRAWER_LIMIT = 25;
 const VAULT_TOKEN = /(?:^|[\s"'`(<=])(vault:\/\/[^\s"'`()<>]*)$/i;
 const PR_TOKEN = /(?:^|[\s"'`(<=])(pr:\/\/[^\s"'`()<>]*)$/i;
 
-function decodeSegment(text: string): string {
+export function decodeSegment(text: string): string {
  try {
   return decodeURIComponent(text);
  } catch {
@@ -47,13 +47,14 @@ export function replaceToken(lines: string[], line: number, col: number, prefix:
  * original instance, whose methods rely on private fields. When `enabled()` is false the drawer is inert,
  * so a settings toggle takes effect without reinstalling the provider.
  */
-function drawerProvider(
+export function drawerProvider(
  inner: EditorProvider,
  enabled: () => boolean,
  tokenPattern: RegExp,
  scheme: string,
  suggest: (token: string, signal?: AbortSignal) => Promise<CompletionResult>,
  inserted: (item: CompletionItem) => string,
+ onApplied?: (item: CompletionItem) => void,
 ): EditorProvider {
  const getSuggestions: EditorProvider["getSuggestions"] = async (lines, line, col, signal, onPartial) => {
   const token = enabled() ? tokenPattern.exec((lines[line] ?? "").slice(0, col))?.[1] : undefined;
@@ -65,7 +66,14 @@ function drawerProvider(
   if (!item.value.startsWith(scheme) || !prefix.toLowerCase().startsWith(scheme)) {
    return inner.applyCompletion(lines, line, col, item, prefix);
   }
-  return replaceToken(lines, line, col, prefix, inserted(item));
+  const applied = replaceToken(lines, line, col, prefix, inserted(item));
+  if (!onApplied) return applied;
+  return {
+   ...applied,
+   onApplied: () => {
+    onApplied(item);
+   },
+  };
  };
  return new Proxy(inner, {
   get(target, prop, receiver) {
@@ -113,7 +121,7 @@ export async function loadVaultRoots(): Promise<Map<string, string>> {
 const encodeVaultPath = (relative: string): string => relative.split("/").map(encodeURIComponent).join("/");
 
 // Prefix matches outrank substring matches; non-matches are dropped.
-function matchRank(name: string, query: string): number {
+export function matchRank(name: string, query: string): number {
  if (!query) return 1;
  const lower = name.toLowerCase();
  if (lower.startsWith(query)) return 2;
@@ -172,7 +180,7 @@ export async function vaultCompletions(token: string, roots: Map<string, string>
 }
 
 /** Folders keep the cursor on the URL so the next Tab reopens the drawer one level down; files end the token. */
-export function withVaultDrawer(inner: EditorProvider, enabled: () => boolean): EditorProvider {
+export function withVaultDrawer(inner: EditorProvider, enabled: () => boolean, onApplied?: (item: CompletionItem) => void): EditorProvider {
  return drawerProvider(
   inner,
   enabled,
@@ -180,6 +188,7 @@ export function withVaultDrawer(inner: EditorProvider, enabled: () => boolean): 
   "vault://",
   async (token) => vaultCompletions(token, await loadVaultRoots()),
   (item) => (item.value.endsWith("/") ? item.value : `${item.value} `),
+  onApplied,
  );
 }
 
@@ -413,7 +422,7 @@ async function getMyPrs(signal?: AbortSignal): Promise<MyPr[]> {
  return prCache?.prs ?? [];
 }
 
-export function withPrDrawer(inner: EditorProvider, enabled: () => boolean): EditorProvider {
+export function withPrDrawer(inner: EditorProvider, enabled: () => boolean, onApplied?: (item: CompletionItem) => void): EditorProvider {
  return drawerProvider(
   inner,
   enabled,
@@ -424,5 +433,6 @@ export function withPrDrawer(inner: EditorProvider, enabled: () => boolean): Edi
    return signal?.aborted ? null : prCompletions(token, prs);
   },
   (item) => `${item.value} `,
+  onApplied,
  );
 }

@@ -85,4 +85,16 @@ describe("stall watch", () => {
 		expect(detectStalls(path, now, thresholds, alerted)).toHaveLength(1);
 		void dir;
 	});
+
+	test("skips advisor transcripts (__advisor*.jsonl) in subagent directory", () => {
+		const session = fixture([{ timestamp: now, type: "message", message: { role: "assistant", content: "ok" } }]);
+		const dir = session.slice(0, -".jsonl".length);
+		mkdirSync(dir, { recursive: true });
+		const advisorPath = join(dir, "__advisor.jsonl");
+		writeFileSync(advisorPath, JSON.stringify({ timestamp: old, type: "message", message: { role: "user", content: "review" } }) + "\n");
+
+		const alerted = new Set<string>();
+		const stalls = detectStalls(session, now, thresholds, alerted);
+		expect(stalls).toHaveLength(0);
+	});
 });

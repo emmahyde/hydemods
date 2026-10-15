@@ -147,6 +147,9 @@ export function detectStalls(sessionFile: string, now = new Date(), thresholds =
 	try {
 		const dir = sessionFile.slice(0, -".jsonl".length);
 		for (const name of readdirSync(dir)) {
+			// Advisor transcripts (__advisor.jsonl, __advisor.<slug>.jsonl) are passive reviews,
+			// not killable background jobs or subagents in proc://. Skip them from stall watch.
+			if (name.startsWith("__advisor")) continue;
 			const path = join(dir, name);
 			if (name.endsWith(".jsonl") && statSync(path).mtimeMs >= liveSince) files.push(path);
 		}

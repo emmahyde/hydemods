@@ -29,6 +29,8 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - The tool color covers pending and successful calls. Failed calls stay red.
   - Lines already in your terminal scrollback keep their old color.
 - **`vault://` drawer.** Lists your Obsidian vaults, then their folders and notes.
+- **`xd://` drawer.** Lists the session's mounted tools with their descriptions. Type part of a name to filter. Tab expands tools that have documentation topics.
+- **`proc://` drawer.** Lists session jobs, running agents, and project services with their status. Select one, then Tab to see its URL actions. Completion only inserts a URL. It never stops or changes a process.
 - **`pr://` drawer.** Lists your open PRs with CI state, unresolved threads, and conflicts. It needs an authenticated [`gh`](https://cli.github.com).
   - `HYDEMODS_PR_OWNERS=org1,org2` limits the list to those owners.
   - `HYDEMODS_PR_APPROVER=<regex>` adds an `approved` column for matching reviewers.
@@ -52,6 +54,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - `poll`: runs every `intervalSec`. It reports when the command exits 0 or the output matches `until`.
   - `exit`: runs once. It reports on exit.
   - `timeoutMin` defaults to 60. A final card shows the exit code and the last 8 lines.
+  - When the session exposes its job manager, each monitor is also one native job. `proc://` lists it for its whole life, `proc://<id>/kill` cancels it, and `list` shows its `proc://` id. Without a job manager the monitor runs the same way, without a `proc://` entry.
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
 - **`ror` (ready for review).** Finds your ready PRs, groups them in tiers, and sends them in a Slack DM.
@@ -97,6 +100,25 @@ Config is `~/.config/hydemods/ror.json` (`HYDEMODS_ROR_CONFIG` overrides the pat
 - `tiers[].description`: optional. The classifier reads it.
 - `classifierModel`: model selector. Default `@default:medium`.
 - `autoTiered`: the tool maintains it.
+
+### Claude marketplace browser
+
+Inspired by [pi-claude-marketplace](https://pi.dev/packages/pi-claude-marketplace), Hydemods adds `/claude` to browse Claude plugin marketplaces and install compatible plugins through OMP's native plugin infrastructure. It uses OMP's existing marketplace registry, not a separate Pi installation.
+
+Run `/claude` to open the browser. If no marketplace is configured, it offers to add `anthropics/claude-plugins-official`. Choose a plugin to review its components and confirm installation.
+
+```text
+/claude add anthropics/claude-plugins-official
+/claude available
+/claude inspect plugin-name@marketplace-name
+/claude install plugin-name@marketplace-name
+/claude installed
+/claude update
+```
+
+The compatibility report distinguishes supported components from unsupported Claude-specific features. Installing a plugin grants trust to its content: supported extensions and server integrations can execute code when loaded. Review the source and the report before confirming.
+
+After installation, run `/reload-plugins` to load the new resources. The browser does not install the upstream Pi extension or its adapter dependencies.
 
 ## Development
 

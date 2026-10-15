@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
-import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { Box, code as codeNode, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { node as nativeNode } from "@oh-my-pi/pi-tui/native/describe";
+import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { readFileSync, statSync } from "node:fs";
@@ -16,7 +18,7 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
 import { readSourceFsPath, renderFallbackToolCard, splitPathAndSel } from "./lib/host-copies";
-import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
+import { outlineMarkdown, outlineSource, recoverOldText, renderEditOutline, renderGrepOutline, renderMarkdownOutline, renderOutline, renderRange, type GrepFileMatches, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
 import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
@@ -24,17 +26,26 @@ import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-gene
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
+import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
+import { registerHelperDrawers } from "./lib/helper-drawers";
+import { vaultDrawer } from "./lib/drawer-vault";
+import { contentDrawer } from "./lib/drawer-content";
+import { runtimeDrawer } from "./lib/drawer-runtime";
+import { remoteDrawer } from "./lib/drawer-remote";
 import { fetchMyPrs, refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorProvider } from "./lib/url-drawers";
+import { withXdDrawer, withProcDrawer } from "./lib/xd-proc-drawers";
+import { xdSourcesFor, procSourcesFor, asyncJobsFor } from "./lib/host-runtime";
+import { registerMarketplace } from "./lib/marketplace";
+import { registerUrlPreviewLifecycle } from "./lib/url-previews";
 import { applyClassifications, assignTier, formatRorMessage, groupByTier, loadRorConfig, prKey, readyPrs, resolvePrRefs, rorConfigPath, saveRorConfig, sendSelfDm } from "./lib/ror";
 import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
@@ -99,18 +110,11 @@ const TWEAK_DEFS: TweakDef[] = [
 		render: () => "OMP's own auto-titling is disabled while this is on. /rename still overrides.",
 	},
 	{
-		name: "vault-url-drawer",
-		title: "vault:// completion drawer",
-		description: "Typing vault:// opens a drawer of Obsidian vaults, then folders and notes, like agent://.",
+		name: "internal-url-drawers",
+		title: "Interactive URL drawers",
+		description: "Browse and inspect all 19 internal URL schemes before inserting a reference.",
 		category: "Interface",
-		render: () => "Tab into a vault or folder to keep drilling; picking a note inserts its URL. Vaults come from Obsidian's own registry.",
-	},
-	{
-		name: "pr-url-drawer",
-		title: "pr:// completion drawer",
-		description: "Typing pr:// opens a drawer of your own open PRs with CI, unresolved-thread and merge-conflict status.",
-		category: "Interface",
-		render: () => "Needs an authenticated gh. HYDEMODS_PR_OWNERS=org1,org2 limits the list to those owners; HYDEMODS_PR_APPROVER=<regex> adds an approved column for a matching reviewer login.",
+		render: () => "Type a URL and Tab, /browse, or Ctrl+Shift+U. Remote content loads only with Ctrl+F.",
 	},
 	{
 		name: "stalled-agent-alerts",
@@ -458,6 +462,17 @@ function structuredResult(result: unknown): StructuredText {
 		// Output that reads as code keeps syntax colour but is never rewritten: real outlines
 		// come from the tree-sitter read/edit cards, not from guessing at command output.
 		if (isLikelyCode(text)) return { text, format: "code" };
+
+		if (useToon) {
+			const tabular = parseTabularData(text);
+			if (tabular !== undefined && tabular.length > 0) {
+				try {
+					return formatJsonOutput(tabular, useToon);
+				} catch {
+					// Fall through
+				}
+			}
+		}
 	}
 
 	return { text: typeof text === "string" ? text : String(text), format: "text" };
@@ -528,6 +543,15 @@ function colorizeOutlineLine(line: string, theme: ThemeLike): string {
 	if (header) return `${theme.fg("accent", header[1])}${theme.fg("dim", header[2])}`;
 	const fold = /^(\s*)(⋯\d+)$/.exec(line);
 	if (fold) return `${fold[1]}${theme.fg("muted", fold[2])}`;
+	// Markdown heading row: indent, hashes, heading text, line number
+	const mdRow = /^(\s*)(#{1,6})\s+(.*?)(  :\d+)?$/.exec(line);
+	if (mdRow) {
+		const indent = mdRow[1];
+		const hashes = theme.fg("syntaxKeyword", mdRow[2]);
+		const title = theme.fg("syntaxType", mdRow[3]);
+		const lineTarget = mdRow[4] ? theme.fg("dim", mdRow[4]) : "";
+		return `${indent}${hashes} ${title}${lineTarget}`;
+	}
 	const row = /^(\s*)(.*?)(  ⋯\d+)?$/.exec(line);
 	if (row) return `${row[1]}${colorizeCodeLine(row[2], theme)}${row[3] ? theme.fg("muted", row[3]) : ""}`;
 	return line;
@@ -567,8 +591,15 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 	if (/^\s*(?:\[[^\]\r\n]+#[\da-f]+\]|#{1,6} .+#[\da-f]+|#{1,6} .+\/)\s*$/i.test(line)) return theme.fg("dim", line);
 	if (/^\s*\[(?:Showing lines|truncated;|Source:)/.test(line) || /^\s*(?:…|\.\.\.)\s*$/.test(line)) return theme.fg("dim", line);
 	if (format === "file") {
-		return /^\s*[\w$]+(?:\[\d+\])?(?:\{[^}]+\})?:\s/.test(line)
-			? colorizeAstToonLine(line, theme) : colorizeCodeLine(line, theme);
+		if (/^\s*[\w$]+(?:\[\d+\])?(?:\{[^}]+\})?:\s/.test(line)) return colorizeAstToonLine(line, theme);
+		// Check for line-numbered source code output: e.g. "4:describe(...)" or "   4│ const x = 1;"
+		const lineNumbered = /^(\s*\*?\d+[:│])\s*(.*)$/.exec(line);
+		if (lineNumbered) {
+			const num = theme.fg("dim", lineNumbered[1]);
+			const code = colorizeCodeLine(lineNumbered[2], theme);
+			return `${num} ${code}`;
+		}
+		return colorizeCodeLine(line, theme);
 	}
 	if (format === "toon") {
 		return colorizeAstToonLine(line, theme);
@@ -774,6 +805,119 @@ function readOutlineStructured(result: { content: unknown; details?: unknown }, 
 	if (structured) readOutlineByResult.set(result, structured);
 	return structured;
 }
+// A grep result enriched with AST declaration context for matching lines.
+function grepOutlineStructured(result: { content: unknown; details?: unknown; isError?: boolean }): StructuredText | undefined {
+	if (result.isError) return undefined;
+	const details = (result.details ?? {}) as {
+		displayContent?: string;
+		cwd?: string;
+		files?: string[];
+		scopePath?: string;
+		searchPath?: string;
+	};
+
+	const rawText = details.displayContent ?? toolResultText(result.content) ?? "";
+	if (!rawText || rawText === "No matches found") return undefined;
+
+	// Parse file blocks and line matches from grep displayContent or raw output.
+	// OMP grep output uses either:
+	// 1) Single-file format: [path/to/file#hash] or starting directly with matches when scopePath is given.
+	// 2) Multi-file format: markdown headings:
+	//    # /dir/path/
+	//    ## sub/
+	//    ### file.ts#C690
+	// 3) Line rows:
+	//    Context: `  12: text` or `  12│text`
+	//    Matches: ` *13: text` or ` *13│text`
+	//    Elisions: `    │...`
+	const lines = rawText.split(/\r?\n/);
+	const filesMap = new Map<string, Array<{ line: number; text: string; starred: boolean }>>();
+	let currentFile: string | undefined;
+	const dirStack: string[] = [];
+
+	for (const line of lines) {
+		const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+		if (headingMatch) {
+			const level = headingMatch[1].length;
+			let headingTarget = headingMatch[2].trim();
+			// Strip trailing tag like #D5B3
+			const hashIndex = headingTarget.indexOf("#");
+			if (hashIndex > 0) headingTarget = headingTarget.slice(0, hashIndex).trim();
+
+			if (headingTarget.endsWith("/")) {
+				// Directory heading
+				dirStack.length = Math.min(dirStack.length, level - 1);
+				dirStack[level - 1] = headingTarget;
+				currentFile = undefined;
+			} else {
+				// File heading
+				dirStack.length = Math.min(dirStack.length, level - 1);
+				const dirPrefix = dirStack.join("");
+				const candidatePath = dirPrefix ? `${dirPrefix}${headingTarget}` : headingTarget;
+				currentFile = candidatePath;
+				if (!filesMap.has(currentFile)) filesMap.set(currentFile, []);
+			}
+			continue;
+		}
+
+		const bracketMatch = /^\[([^\]#\s]+)(?:#[a-f0-9]+)?\]$/i.exec(line);
+		if (bracketMatch) {
+			currentFile = bracketMatch[1];
+			if (!filesMap.has(currentFile)) filesMap.set(currentFile, []);
+			continue;
+		}
+
+		if (!currentFile && details.scopePath && (line.includes(":") || line.includes("│"))) {
+			currentFile = details.scopePath;
+			if (!filesMap.has(currentFile)) filesMap.set(currentFile, []);
+		}
+
+		if (currentFile) {
+			const matchLine = /^\s*(\*)?\s*(\d+)[│:]\s?(.*)$/.exec(line);
+			if (matchLine) {
+				const starred = Boolean(matchLine[1]);
+				const lineNum = Number(matchLine[2]);
+				const matchText = matchLine[3];
+				filesMap.get(currentFile)!.push({ line: lineNum, text: matchText, starred });
+			}
+		}
+	}
+
+	if (filesMap.size === 0) return undefined;
+
+	const fileMatchesList: GrepFileMatches[] = [];
+	for (const [filePath, rows] of filesMap.entries()) {
+		// When any row in the file is explicitly starred (*), filter to only starred rows (actual matches, not context)
+		const hasStarred = rows.some(r => r.starred);
+		const filtered = hasStarred ? rows.filter(r => r.starred) : rows;
+		if (filtered.length > 0) {
+			fileMatchesList.push({
+				path: filePath,
+				matches: filtered.map(r => ({ line: r.line, text: r.text })),
+			});
+		}
+	}
+	if (fileMatchesList.length === 0) return undefined;
+
+	const outlineForFile = (filePath: string) => {
+		const baseDir = details.cwd ?? process.cwd();
+		const resolved = resolve(baseDir, filePath.startsWith("~/") ? resolve(homedir(), filePath.slice(2)) : filePath);
+		try {
+			const stat = statSync(resolved);
+			const code = readFileSync(resolved, "utf8");
+			const stamp = `${stat.size}:${stat.mtimeMs}`;
+			const outline = memoOutline(`disk:${resolved}:${stamp}`, code, resolved);
+			return { outline, lines: code.split(/\r?\n/) };
+		} catch {
+			return undefined;
+		}
+	};
+
+	const rendered = renderGrepOutline(fileMatchesList, outlineForFile);
+	if (!rendered) return undefined;
+
+	return { text: rendered.join("\n"), format: "outline" };
+}
 
 // A whole-file write shown as the declaration outline of what was written, plus diagnostics.
 function writeOutlineStructured(result: { details?: unknown; isError?: boolean }, args: unknown): StructuredText | undefined {
@@ -810,6 +954,13 @@ function computeReadOutline(result: { content: unknown; details?: unknown }, arg
 	const startLine = details?.displayContent?.startLine ?? 1;
 	const whole = startLine === 1 && !details?.truncation?.truncated && (details?.totalLines === undefined || Math.abs(details.totalLines - shown.length) <= 1);
 	if (whole) {
+		const isMarkdown = /\.(?:md|markdown|mdx)$/i.test(fsPath);
+		if (isMarkdown) {
+			const mdOutline = outlineMarkdown(text);
+			if (mdOutline && mdOutline.headings.length > 0) {
+				return { text: renderMarkdownOutline(mdOutline, label).join("\n"), format: "outline", lang: "markdown", path: fsPath };
+			}
+		}
 		const outline = memoOutline(`text:${fsPath}:${Bun.hash(text)}`, text, fsPath);
 		if (!outline || outline.declarations.length === 0) return undefined;
 		return { text: renderOutline(outline, label).join("\n"), format: "outline", lang: outline.language, path: fsPath };
@@ -1078,7 +1229,20 @@ function outlineRows(outline: string[], expanded: boolean, limit: number, theme:
 }
 
 function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
-	return collapseTextLines(prose, limit, expanded).map(line => line.startsWith("… ") ? theme.fg("muted", line) : line);
+	return collapseTextLines(prose, limit, expanded).map(line => {
+		if (line.startsWith("… ")) return theme.fg("muted", line);
+		// Check for line-numbered source code output: e.g. "4:describe(...)" or "   4│ const x = 1;"
+		const lineNumbered = /^(\s*\*?\d+[:│])\s*(.*)$/.exec(line);
+		if (lineNumbered) {
+			const num = theme.fg("dim", lineNumbered[1]);
+			const code = colorizeCodeLine(lineNumbered[2], theme);
+			return `${num} ${code}`;
+		}
+		if (/^\[[^\]]+#[0-9a-fA-F]+\]$/.test(line)) {
+			return theme.fg("dim", line);
+		}
+		return colorizeCodeLine(line, theme);
+	});
 }
 
 // Mirrors pi-tui's usage row, but against the theme handed to the renderer. The
@@ -1154,7 +1318,15 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const reason = message.split(/\n|(?<=\.)\s/)[0] ?? "edit rejected";
 		return new Text(`${theme.fg("error", "✖ edit rejected:")} ${theme.fg("muted", reason)} ${theme.fg("dim", "(Ctrl+O)")}`, 0, 0);
 	}
-	const outline = toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : undefined;
+	const outline = toolName === "read"
+		? readOutlineStructured(result, args)
+		: toolName === "edit"
+		? editOutlineStructured(result)
+		: toolName === "write"
+		? writeOutlineStructured(result, args)
+		: toolName === "grep"
+		? grepOutlineStructured(result)
+		: undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
 		const details: ToolCardDetails = { toolName, result: outline.text, isError: false, cwd: process.cwd() };
@@ -1168,7 +1340,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const job = /\bbg_\d+\b/.exec(resultText)?.[0];
 		return new Text(theme.fg("muted", `↳ backgrounded${job ? ` as ${job}` : ""}; output follows when it finishes`), 0, 0);
 	}
-	if (!result.isError && nativeRendersJsonTree(toolName, args, resultText)) return undefined;
+	// Let hydemods structure and format tool output (including TOON) whenever possible.
 	// Huge results keep the native card: hydemods would re-parse, colour and Markdown-render
 	// the whole payload on every repaint, and the native card already limits what it draws.
 	if (resultText !== undefined && cappedRenderPayload(resultText) === undefined) return undefined;
@@ -1214,6 +1386,58 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 					?? original.renderResult(result, fallbackOptions, theme, args);
 			},
 		};
+		if (original.describeResult) {
+			wrapped.describeResult = (result, options, args) => {
+				if (takeover.active() && !options.isPartial) {
+					const resultText = toolResultText(result.content);
+					if (resultText !== undefined && cappedRenderPayload(resultText) !== undefined) {
+						const payload = notebookPayload(name, args, result.isError) ?? extractToolPayload({ toolName: name, result });
+						if (cappedRenderPayload(payload) !== undefined) {
+							const details: ToolCardDetails = { toolName: name, result: payload, isError: result.isError, cwd: process.cwd() };
+							const structured = structureToolResult(details);
+							if (structured.format === "toon") {
+								const originalView = original.describeResult?.(result, options, args) ?? original.describeCall?.(args, options);
+								const toonNode = codeNode(structured.text, { lang: "yaml" });
+								const originalBody = originalView?.body ?? [];
+								// In eval or multi-part views, preserve the cell input / preamble and replace or append output
+								let body: NativeChild[];
+								if (name === "eval" && originalBody.length > 0) {
+									body = originalBody.map((nodeItem): NativeChild => {
+										// The eval card's wire shape: a cell row whose children carry roles; cast once, rebuild as NativeNode.
+										type RoleNode = { k: string; p?: { role?: string }; c?: RoleNode[] };
+										const itemObj = nodeItem as unknown as RoleNode;
+										if (itemObj?.p?.role === "omp.tool.eval.cell") {
+											const cellChildren = (itemObj.c ?? []).map(child => {
+												if (child?.p?.role === "omp.tool.eval.result") {
+													return {
+														...child,
+														c: [
+															nativeNode("icon", { name: "arrow-right", role: "omp.tool.eval.prompt", aria: "Output" }),
+															nativeNode("col", { role: "omp.tool.eval.outputs" }, [toonNode]),
+														],
+													};
+												}
+												return child;
+											});
+											return { ...itemObj, c: cellChildren } as unknown as NativeNode;
+										}
+										return nodeItem;
+									});
+								} else {
+									body = [toonNode];
+								}
+								return {
+									...originalView,
+									body,
+									preview: { lines: takeover.display.collapsedLines },
+								};
+							}
+						}
+					}
+				}
+				return original.describeResult?.(result, options, args);
+			};
+		}
 		toolRenderers[name] = wrapped;
 	}
 	for (const name of EXTRA_CARD_TOOLS) {
@@ -1418,6 +1642,7 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 /* -------------------------------------------------------------------------- */
 
 export default function hydemods(pi: ExtensionAPI): void {
+	registerMarketplace(pi);
 	let stopStallWatch: (() => void) | undefined;
 	const display: ToolDisplayState = { collapsedLines: readSetting(collapsedLinesSetting), cardsOn: true };
 	const repaintToolCards = (ctx: ExtensionContext) => {
@@ -1589,10 +1814,27 @@ export default function hydemods(pi: ExtensionAPI): void {
 
 	const latestSessionThought = (ctx: ExtensionContext): string => {
 		const entries = ctx.sessionManager.getEntries();
+		let lastAssistantIndex = -1;
+		let lastThinkingIndex = -1;
+		let thoughtText = "";
+
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
-			const text = entry.type === "message" && "message" in entry ? lastThinkingText(entry.message) : undefined;
-			if (text) return text;
+			if (entry.type === "message" && "message" in entry && (entry.message as { role?: string })?.role === "assistant") {
+				if (lastAssistantIndex === -1) lastAssistantIndex = i;
+				const text = lastThinkingText(entry.message);
+				if (text && lastThinkingIndex === -1) {
+					lastThinkingIndex = i;
+					thoughtText = text;
+				}
+				if (lastAssistantIndex !== -1 && lastThinkingIndex !== -1) break;
+			}
+		}
+
+		// Only show the thought if it belongs to the most recent assistant message.
+		// If subsequent assistant turns had no thinking, don't show a stale past thought.
+		if (lastThinkingIndex !== -1 && lastThinkingIndex === lastAssistantIndex) {
+			return thoughtText;
 		}
 		return "";
 	};
@@ -1648,7 +1890,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 		noteThought(event.message);
 		guardRunawayEdit(event.message, ctx);
 	});
-
+	pi.on("agent_start", () => {
+		latestThought = "";
+		thoughtTui?.requestRender();
+	});
 	// Large files come back with pruned snapshots, and the card is redrawn long after later
 	// edits change the disk. Capture the outline now, while the disk still matches this diff.
 	pi.on("tool_result", (event) => {
@@ -1723,15 +1968,29 @@ export default function hydemods(pi: ExtensionAPI): void {
 		watchSetting(sessionTitleTweak.setting, (enabled) => { setHostAutoTitle(!enabled); });
 	}
 
-	// Provider factories persist on the UI and are re-applied on every refresh, so install once per UI.
-	// Each drawer re-reads its setting per keystroke, so toggling needs no reinstall.
-	const drawersInstalled = new WeakSet<object>();
+	const urlPreviews = registerUrlPreviewLifecycle(pi, [vaultDrawer, runtimeDrawer, contentDrawer, remoteDrawer]);
+	const helperDrawers = registerHelperDrawers(
+		pi,
+		[vaultDrawer, runtimeDrawer, contentDrawer, remoteDrawer],
+		() => isTweakEnabled("internal-url-drawers"),
+		(ctx, uri, page) => { urlPreviews.showPreview(ctx, uri, page); },
+	);
 	const installDrawers = (ctx: ExtensionContext) => {
-		if (!ctx.hasUI || drawersInstalled.has(ctx.ui)) return;
-		drawersInstalled.add(ctx.ui);
-		ctx.ui.addAutocompleteProvider((inner) => withVaultDrawer(inner as EditorProvider, () => isTweakEnabled("vault-url-drawer")) as typeof inner);
-		ctx.ui.addAutocompleteProvider((inner) => withPrDrawer(inner as EditorProvider, () => isTweakEnabled("pr-url-drawer")) as typeof inner);
-		if (isTweakEnabled("pr-url-drawer")) void refreshMyPrs(); // warm the cache so the first pr:// is instant
+		helperDrawers.install(ctx);
+		if (ctx.hasUI) {
+			const enabled = () => isTweakEnabled("internal-url-drawers");
+			const onApplied = (item: { value: string }) => {
+				urlPreviews.showPreview(ctx, item.value.trimEnd());
+			};
+			ctx.ui.addAutocompleteProvider(inner => {
+				let p = withVaultDrawer(inner as unknown as EditorProvider, enabled, onApplied);
+				p = withPrDrawer(p, enabled, onApplied);
+				p = withXdDrawer(p, enabled, xdSourcesFor(ctx), onApplied);
+				p = withProcDrawer(p, enabled, procSourcesFor(ctx), onApplied);
+				return p as unknown as typeof inner;
+			});
+		}
+		urlPreviews.install(ctx);
 	};
 
 	// Runs inside the stalled subagent's own extension instance, so steer/abort hit that agent.
@@ -1780,6 +2039,25 @@ export default function hydemods(pi: ExtensionAPI): void {
 		];
 		return new Text(rows.join("\n"), 1, 0);
 	});
+	// Best effort: when the session exposes its async job manager, the monitor's loop is also
+	// registered as one native job, so proc:// lists it for its whole life and `proc://<id>/kill`
+	// aborts the loop and the shell check it is running. The job's own completion delivery is
+	// suppressed: the monitor's `notify` above is the single wake. Without a manager the monitor
+	// runs exactly as before, host-less; proc:// visibility is an extra, never a precondition.
+	const monitorJobHost = (ctx: ExtensionContext): MonitorJobsHost | undefined => {
+		const live = asyncJobsFor(ctx);
+		if (!live) return undefined;
+		const { manager, ownerId } = live;
+		return {
+			register: (label, run) =>
+				manager.register("bash", label, ({ signal, reportProgress }) => run(signal, (text, output) => { void reportProgress(text, { output }); }), { ownerId }),
+			cancel: jobId => manager.cancel(jobId, { ownerId }),
+			// `acknowledgeDeliveries` is the durable suppression: a host wait/unwatch can lift a
+			// watch and replay the completion, but an acknowledged delivery is never re-queued.
+			suppressDelivery: jobId => { manager.acknowledgeDeliveries([jobId]); },
+			setLabel: (jobId, label) => { const job = manager.getJob(jobId); if (job) job.label = label; },
+		};
+	};
 	pi.registerMessageRenderer<MonitorMessageDetails>("hydemods-monitor", (message, { expanded }, theme) => {
 		if (!message.details) return undefined;
 		const { spec, result } = message.details;
@@ -1803,7 +2081,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 		];
 		return new Text(rows.join("\n"), 1, 0);
 	});
-	let monitorSessionFile: string | undefined;
 	const { Type } = pi.typebox;
 	pi.registerTool({
 		name: "monitor",
@@ -1815,7 +2092,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			'mode "stream" (default) runs `command` once as a watcher: EVERY stdout line is an event that wakes you (lines within ~300ms share one event), and a final message reports when it exits or times out. Write the command to print only meaningful state changes, deduped, e.g. `prev=; while true; do s=$(gh pr checks 1787 2>&1 | sort); [ "$s" != "$prev" ] && echo "$s"; prev=$s; sleep 60; done`. Use stderr or `>/dev/null` for noise; exit the loop when finished.',
 			'mode "poll" re-runs `command` every `intervalSec` and reports once when it exits 0, or when `until` (regex over stdout+stderr) matches.',
 			'mode "exit" runs `command` once (e.g. `gh pr checks 123 --watch`) and reports only when it exits, whatever the code.',
-			"Starting a monitor with an existing name replaces it. Monitors live in this session and stop on reload or session switch.",
+			"Every monitor reports once when it settles: condition met, exited, timed out (`timeoutMin`), or failed to run. Starting a monitor with an existing name replaces it. Monitors live in this session and stop on reload or session switch.",
+			"Each monitor is one native background job: it is visible at `proc://` for its whole life, including the gaps between checks, and `proc://<id>/kill` cancels the loop and any check it is running.",
 		].join("\n"),
 		parameters: Type.Object({
 			op: Type.Union([Type.Literal("start"), Type.Literal("list"), Type.Literal("cancel")]),
@@ -1831,7 +2109,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			const text = (body: string) => ({ content: [{ type: "text" as const, text: body }], details: undefined });
 			if (params.op === "list") {
 				const rows = monitors.list();
-				return text(rows.length ? rows.map(r => `${r.name} [${r.mode}] ${r.mode === "stream" ? `${r.events} events` : `${r.runs} runs`}, ${r.elapsedSec}s: ${r.command}${r.last ? `\n  last: ${r.last.split("\n").at(-1)}` : ""}`).join("\n") : "No monitors running.");
+				return text(rows.length ? rows.map(r => `${r.name} [${r.mode}] ${r.mode === "stream" ? `${r.events} events` : `${r.runs} runs`}, ${r.elapsedSec}s${r.nextInSec === undefined ? "" : `, next ${r.nextInSec}s`}${r.jobId ? ` (proc://${r.jobId})` : ""}: ${r.command}${r.last ? `\n  last: ${r.last.split("\n").at(-1)}` : ""}`).join("\n") : "No monitors running.");
 			}
 			if (!params.name) throw new Error("`name` is required.");
 			if (params.op === "cancel") return text(monitors.cancel(params.name) ? `Cancelled monitor "${params.name}".` : `No monitor named "${params.name}".`);
@@ -1845,7 +2123,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 				intervalSec: Math.max(5, params.intervalSec ?? 30),
 				timeoutMin: Math.max(0.1, params.timeoutMin ?? 60),
 			};
-			void monitors.start(spec);
+			void monitors.start(spec, monitorJobHost(ctx));
 			return text(
 				spec.mode === "stream"
 					? `Monitor "${spec.name}" started (stream, timeout ${spec.timeoutMin}m). Each output line arrives as a "Monitor event" message; end your turn or continue other work — do not poll.`
@@ -2017,9 +2295,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 		stopStallWatch?.();
 		stopStallWatch = undefined;
 		const sessionFile = ctx.sessionManager.getSessionFile();
-		// Monitors report into the session that started them; drop them when the session changes.
-		if (sessionFile !== monitorSessionFile) monitors.cancelAll();
-		monitorSessionFile = sessionFile;
+		// Monitors report into the session that started them. Every session event here (start,
+		// switch, branch, tree) is a fresh session context, so drop them unconditionally: comparing
+		// session files misses sessions that have no file (`-p`, SDK, embedded).
+		monitors.cancelAll();
 		const alerted = new Set<string>();
 		if (sessionFile) {
 			const check = () => {
@@ -2057,6 +2336,9 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("session_switch", onSession);
 	pi.on("session_branch", onSession);
 	pi.on("session_tree", onSession);
+	// Emitted when the session is disposed (exit, Ctrl+C/D, signals), which also cancels its async
+	// jobs; cancelling here aborts the loop and its shell check before the manager drains.
+	pi.on("session_shutdown", () => { monitors.cancelAll(); });
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const prompt = typeof event.prompt === "string" ? event.prompt : "";

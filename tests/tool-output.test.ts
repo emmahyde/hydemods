@@ -9,6 +9,7 @@ import {
 	formatJsonOutput,
 	parseGrepOutput,
 	parseYamlDocument,
+	parseTabularData,
 	sanitizeTerminalText,
 } from "../lib/tool-output";
 import { underlineLabel, underlinePathTokens } from "../lib/path-styling";
@@ -94,6 +95,96 @@ test("nested JSON decode unpacks fenced markdown json code blocks", () => {
 	const fenced = "```json\n{\n  \"status\": \"ok\",\n  \"data\": [1, 2, 3]\n}\n```";
 	const decoded = decodeNestedJson(fenced);
 	expect(decoded).toEqual({ status: "ok", data: [1, 2, 3] });
+});
+test("parseTabularData parses CSV, TSV, and whitespace-aligned command tables into TOON-ready rows", () => {
+	const csv = "id,name,role\n007,alice,admin\n1.10,bob,user";
+	const csvRows = parseTabularData(csv);
+	expect(csvRows).toEqual([
+		{ id: "007", name: "alice", role: "admin" },
+		{ id: "1.10", name: "bob", role: "user" }
+	]);
+	expect(formatJsonOutput(csv).format).toBe("toon");
+
+	const tsv = "pid\tcpu\tcommand\n507\t22.3\tbun omp\n94212\t19.1\tbun omp";
+	const tsvRows = parseTabularData(tsv);
+	expect(tsvRows).toEqual([
+		{ pid: "507", cpu: "22.3", command: "bun omp" },
+		{ pid: "94212", cpu: "19.1", command: "bun omp" }
+	]);
+	expect(formatJsonOutput(tsv).format).toBe("toon");
+
+	// Real ps aux with right-aligned PIDs (3-digit and 5-digit) under PID column
+	const realPsAux = `USER       PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND
+emmahyde   507  22.3  5.3 509984784 883008 s011  S+   10:30AM   5:09.79 bun /Users/emmahyde/.bun/bin/omp --resume
+emmahyde 94212  19.1  2.9 509535712 482688 s017  S+   10:28AM   2:12.78 bun /Users/emmahyde/.bun/bin/omp`;
+	const psRows = parseTabularData(realPsAux);
+	expect(psRows).toBeDefined();
+	expect(psRows?.length).toBe(2);
+	expect(psRows?.[0]["USER"]).toBe("emmahyde");
+	expect(psRows?.[0]["PID"]).toBe("507");
+	expect(psRows?.[1]["PID"]).toBe("94212");
+	expect(psRows?.[0]["COMMAND"]).toBe("bun /Users/emmahyde/.bun/bin/omp --resume");
+
+	const lsof = "COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\nbun       507 emma   58w   REG   1,18   776250 9756 /path/file1\nbun     94212 emma   65u   REG   1,18        0 9756 /path/file2";
+	const tableRows = parseTabularData(lsof);
+	expect(tableRows).toBeDefined();
+	expect(tableRows?.length).toBe(2);
+	expect(tableRows?.[0]["COMMAND"]).toBe("bun");
+	expect(tableRows?.[0]["PID"]).toBe("507");
+	expect(tableRows?.[1]["PID"]).toBe("94212");
+	expect(tableRows?.[1]["FD"]).toBe("65u");
+	expect(formatJsonOutput(lsof).format).toBe("toon");
+});
+
+test("parseTabularData rejects git diff stat, prose with commas, du -sh *, and git status --short", () => {
+	const gitDiffStat = ` README.md                 |  31 +++++-
+ index.ts                  | 246 +++++++++++++++++++++++++++++++++++++++-------
+ lib/code-outline.ts       |  75 ++++++++++++++`;
+	expect(parseTabularData(gitDiffStat)).toBeUndefined();
+
+	const proseWithCommas = `Hello, world!
+This is some text, and here is more.`;
+	expect(parseTabularData(proseWithCommas)).toBeUndefined();
+
+	const proseEqualCommas = `warning: x is deprecated, use y
+note: see docs, section 2`;
+	expect(parseTabularData(proseEqualCommas)).toBeUndefined();
+
+	const duOutput = "4.0K\tREADME.md\n8.0K\tpackage.json";
+	expect(parseTabularData(duOutput)).toBeUndefined();
+
+	const gitStatus = "M  lib/tool-output.ts\n?? tests/new.test.ts";
+	expect(parseTabularData(gitStatus)).toBeUndefined();
+});
+
+test("parseTabularData supports CSV headers with spaces, dotted keys, and abbreviations", () => {
+	const csvSpaces = "First Name,Last Name,Created At\nAlice,Smith,2026-01-01\nBob,Jones,2026-02-01";
+	const rowsSpaces = parseTabularData(csvSpaces);
+	expect(rowsSpaces).toEqual([
+		{ "First Name": "Alice", "Last Name": "Smith", "Created At": "2026-01-01" },
+		{ "First Name": "Bob", "Last Name": "Jones", "Created At": "2026-02-01" }
+	]);
+
+	const csvDotted = "user.id,address.city,meta.count\nu123,Seattle,42\nu456,Portland,10";
+	const rowsDotted = parseTabularData(csvDotted);
+	expect(rowsDotted).toEqual([
+		{ "user.id": "u123", "address.city": "Seattle", "meta.count": "42" },
+		{ "user.id": "u456", "address.city": "Portland", "meta.count": "10" }
+	]);
+
+	const csvAbbrev = "No.,Avg.,Dept.,Mins.\n1,95.5,Engineering,45\n2,88.0,Design,30";
+	const rowsAbbrev = parseTabularData(csvAbbrev);
+	expect(rowsAbbrev).toEqual([
+		{ "No.": "1", "Avg.": "95.5", "Dept.": "Engineering", "Mins.": "45" },
+		{ "No.": "2", "Avg.": "88.0", "Dept.": "Design", "Mins.": "30" }
+	]);
+
+	const csvSection = "Section,Is Active,Use Case\nAuth,true,Login flow\nBilling,false,Invoicing";
+	const rowsSection = parseTabularData(csvSection);
+	expect(rowsSection).toEqual([
+		{ Section: "Auth", "Is Active": "true", "Use Case": "Login flow" },
+		{ Section: "Billing", "Is Active": "false", "Use Case": "Invoicing" }
+	]);
 });
 
 test("path styling underlines filesystem tokens but not URLs or prose", () => {

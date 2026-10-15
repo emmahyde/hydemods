@@ -253,6 +253,230 @@ export function formatSearchOutput(text: string): string | undefined {
 		(_match, indent: string, path: string, score: string, excerpt: string) => `${indent}${path}  [score ${score}]\n${indent}  ${excerpt}`,
 	);
 }
+/**
+ * Attempts to parse tabular text (CSV, TSV, or whitespace-aligned fixed-width columns)
+ * into an array of objects. Returns undefined if the text is not clearly tabular.
+ */
+export function parseTabularData(text: string): Record<string, string>[] | undefined {
+	const clean = text.trim();
+	if (!clean) return undefined;
+	const lines = clean.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l.length > 0);
+	if (lines.length < 2) return undefined;
+
+	// Helper to check if a token looks like a valid column header label
+	const isLikelyHeaderToken = (token: string, mode: "csv" | "tsv" | "fixed"): boolean => {
+		const t = token.trim();
+		if (!t || t.length > 64) return false;
+		// Must contain at least one letter
+		if (!/[a-zA-Z]/.test(t)) return false;
+		// Reject exclamation/question marks typical of prose/errors
+		if (/[!?]/.test(t)) return false;
+		// Reject tokens containing colons (e.g. "warning: x is deprecated", "note: see docs")
+		if (t.includes(":")) return false;
+
+		// Prose guard: column headers are concise labels/phrases (<= 4 words), not sentences
+		const words = t.split(/\s+/).filter(Boolean);
+		if (words.length > 4) return false;
+
+		// For TSV and fixed-width tables, reject trailing dots
+		if (mode !== "csv" && t.endsWith(".")) return false;
+
+		// Reject file size / numeric unit strings: e.g. 4.0K, 100M, 12B, 10ms, 5s
+		if (/^-?\d+(?:\.\d+)?[a-zA-Z]{1,3}$/.test(t)) return false;
+		// Reject file paths or files with extensions in fixed-width / TSV tables (e.g. README.md, lib/x.ts)
+		// Dotted keys like user.id in CSV are preserved
+		if (t.includes("/") || t.includes("\\")) {
+			if (!/^[A-Z0-9_]+(?:\/[A-Z0-9_]+)+$/.test(t)) {
+				return false;
+			}
+		}
+		if (mode !== "csv" && /\.[a-zA-Z0-9]{1,5}$/.test(t)) {
+			return false;
+		}
+		// Reject short status codes like git status flags (M, A, D, R, C, U, ??, !!)
+		if (/^[MADRCU?!]{1,2}$/.test(t)) return false;
+		return true;
+	};
+
+	const isNumOrSize = (s: string): boolean => /^-?\d+(?:\.\d+)?(?:[a-zA-Z]{1,3})?$/.test(s.trim());
+	const isPathOrFile = (s: string): boolean => {
+		const t = s.trim();
+		if (/^[A-Z0-9_]+(?:\/[A-Z0-9_]+)+$/.test(t)) return false;
+		return t.includes("/") || t.includes("\\") || /\.[a-zA-Z0-9]{1,5}$/.test(t);
+	};
+
+	// Check if a header token matches data patterns found in subsequent rows of the same column
+	const headerMatchesDataColumn = (headerToken: string, colIndex: number, dataRows: string[][]): boolean => {
+		const h = headerToken.trim();
+		if (dataRows.some(row => row[colIndex] !== undefined && row[colIndex].trim() === h)) {
+			return true;
+		}
+		if (isNumOrSize(h) && dataRows.length > 0 && dataRows.every(row => row[colIndex] && isNumOrSize(row[colIndex]))) {
+			return true;
+		}
+		if (isPathOrFile(h) && dataRows.length > 0 && dataRows.every(row => row[colIndex] && isPathOrFile(row[colIndex]))) {
+			return true;
+		}
+		return false;
+	};
+
+	// 1. TSV: first line has tabs
+	if (lines[0].includes("\t")) {
+		const headerCols = lines[0].split("\t").map(c => c.trim());
+		if (headerCols.length >= 2 && headerCols.every(c => isLikelyHeaderToken(c, "tsv"))) {
+			const rawDataRows: string[][] = [];
+			let isTsv = true;
+			for (let i = 1; i < lines.length; i++) {
+				const parts = lines[i].split("\t").map(c => c.trim());
+				if (parts.length !== headerCols.length) {
+					isTsv = false;
+					break;
+				}
+				rawDataRows.push(parts);
+			}
+
+			// Reject if any header column matches data signatures of that column (e.g. du -sh *)
+			const headerIsData = headerCols.some((col, idx) => headerMatchesDataColumn(col, idx, rawDataRows));
+			if (isTsv && !headerIsData && rawDataRows.length > 0) {
+				return rawDataRows.map(parts => {
+					const row: Record<string, string> = {};
+					for (let j = 0; j < headerCols.length; j++) {
+						row[headerCols[j]] = parts[j];
+					}
+					return row;
+				});
+			}
+		}
+	}
+
+	// 2. CSV: comma-delimited
+	if (lines[0].includes(",") && !lines[0].startsWith("#")) {
+		const splitCsvLine = (line: string): string[] => {
+			const cols: string[] = [];
+			let current = "";
+			let inQuotes = false;
+			for (let i = 0; i < line.length; i++) {
+				const char = line[i];
+				if (char === '"') {
+					if (inQuotes && line[i + 1] === '"') {
+						current += '"';
+						i++;
+					} else {
+						inQuotes = !inQuotes;
+					}
+				} else if (char === "," && !inQuotes) {
+					cols.push(current.trim());
+					current = "";
+				} else {
+					current += char;
+				}
+			}
+			cols.push(current.trim());
+			return cols;
+		};
+
+		const headerCols = splitCsvLine(lines[0]);
+		// Require at least 2 columns, valid header labels (spaces allowed, e.g. "First Name"), and not prose
+		if (headerCols.length >= 2 && headerCols.every(c => isLikelyHeaderToken(c, "csv"))) {
+			const rawDataRows: string[][] = [];
+			let isCsv = true;
+			for (let i = 1; i < lines.length; i++) {
+				const parts = splitCsvLine(lines[i]);
+				if (parts.length !== headerCols.length) {
+					isCsv = false;
+					break;
+				}
+				rawDataRows.push(parts);
+			}
+
+			const headerIsData = headerCols.some((col, idx) => headerMatchesDataColumn(col, idx, rawDataRows));
+			if (isCsv && !headerIsData && rawDataRows.length > 0) {
+				return rawDataRows.map(parts => {
+					const row: Record<string, string> = {};
+					for (let j = 0; j < headerCols.length; j++) {
+						row[headerCols[j]] = parts[j];
+					}
+					return row;
+				});
+			}
+		}
+	}
+
+	// 3. Whitespace-aligned fixed-width columns (e.g. ps, lsof, df, docker ps)
+	const headerLine = lines[0];
+	if (
+		!/^\s*[|#\-]/.test(headerLine) &&
+		!headerLine.includes(" | ") &&
+		!headerLine.includes("---") &&
+		(/\S\s{2,}\S/.test(headerLine) || headerLine.includes("\t"))
+	) {
+		const colRegex = /\S+/g;
+		const colSpans: Array<{ name: string; start: number; end: number }> = [];
+		let match: RegExpExecArray | null;
+		while ((match = colRegex.exec(headerLine)) !== null) {
+			colSpans.push({ name: match[0], start: match.index, end: match.index + match[0].length });
+		}
+
+		if (
+			colSpans.length >= 2 &&
+			colSpans.every(c => isLikelyHeaderToken(c.name, "fixed") && !c.name.includes(":") && !c.name.includes("|"))
+		) {
+			// Find boundaries by finding space gaps across lines between each header column
+			const cuts = [0];
+			for (let j = 0; j < colSpans.length - 1; j++) {
+				const cur = colSpans[j];
+				const nxt = colSpans[j + 1];
+
+				let bestCut = -1;
+				for (let c = nxt.start; c >= cur.end; c--) {
+					let allSpaces = true;
+					for (let r = 0; r < lines.length; r++) {
+						const ch = lines[r][c] ?? " ";
+						if (ch !== " " && ch !== "\t") {
+							allSpaces = false;
+							break;
+						}
+					}
+					if (allSpaces) {
+						bestCut = c + 1;
+						break;
+					}
+				}
+				if (bestCut === -1) {
+					bestCut = nxt.start;
+				}
+				cuts.push(bestCut);
+			}
+
+			const rawDataRows: string[][] = [];
+			for (let i = 1; i < lines.length; i++) {
+				const line = lines[i];
+				if (/^[-=\s+]+$/.test(line)) continue;
+				const parts: string[] = [];
+				for (let j = 0; j < colSpans.length; j++) {
+					const start = cuts[j];
+					const end = cuts[j + 1];
+					const val = end !== undefined ? line.slice(start, end).trim() : line.slice(start).trim();
+					parts.push(val);
+				}
+				rawDataRows.push(parts);
+			}
+
+			const headerIsData = colSpans.some((col, idx) => headerMatchesDataColumn(col.name, idx, rawDataRows));
+			if (!headerIsData && rawDataRows.length > 0) {
+				return rawDataRows.map(parts => {
+					const row: Record<string, string> = {};
+					for (let j = 0; j < colSpans.length; j++) {
+						row[colSpans[j].name] = parts[j];
+					}
+					return row;
+				});
+			}
+		}
+	}
+
+	return undefined;
+}
 
 export const GREP_MATCH_LIMIT = 16;
 
@@ -437,6 +661,12 @@ export function formatJsonOutput(value: unknown, useToon = true): { text: string
 	const markdown = markdownOutput(value);
 	if (markdown !== undefined) return { text: markdown, format: "text" };
 	if (isMultilineJson(value)) return { text: value, format: "text" };
+	if (typeof value === "string") {
+		const tabular = parseTabularData(value);
+		if (tabular !== undefined && tabular.length > 0) {
+			return { text: structuredValueText(tabular, useToon), format: useToon ? "toon" : "json" };
+		}
+	}
 	if (!needsTextLayout(value)) return { text: structuredValueText(value, useToon), format: useToon ? "toon" : "json" };
 
 	// Keep available values readable beside incomplete previews, without claiming

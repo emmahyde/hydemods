@@ -53,6 +53,7 @@ const NO_COMMENT_ELISION = 1_000_000;
 
 const DECLARATION_START =
 	/^(?:@[\w.]+(?:\([^)]*\))?\s+|(?:export|default|public|private|protected|internal|static|async|override|abstract|readonly|declare|final|unsafe|pub(?:\([^)]*\))?)\s+)*(?:function\*?|class|interface|type|enum|struct|impl|trait|mod|namespace|module|def|fn|func|proc|let|var|const|val|get|set|constructor|[#\w$][\w$]*\s*(?:<[^>]*>)?\s*\(|[#\w$][\w$.]*\s*[:=]\s)/;
+const TEST_BLOCK_START = /^(?:(?:describe|test|it|context|suite)\s*(?:\.\w+)*\s*\(\s*(["'`])([\s\S]*?)\1)/;
 const CONTROL_START = /^(?:if|else|for|while|do|switch|match|case|try|catch|finally|return|throw|await|yield|with|new|import|from|using)\b|^[)\]}.]/;
 const CALL_LITERAL_END = /(?:\(\s*[{[]|,\s*[{[]|\(\s*)$/;
 const COMMENT_LINE = /^(?:\/\/|#|\*|\/\*)/;
@@ -64,7 +65,10 @@ function count(text: string, char: string): number {
 }
 
 function isDeclarationSignature(signature: string): boolean {
-	if (!signature || CONTROL_START.test(signature) || CALL_LITERAL_END.test(signature)) return false;
+	if (!signature) return false;
+	const testMatch = TEST_BLOCK_START.exec(signature);
+	if (testMatch) return true;
+	if (CONTROL_START.test(signature) || CALL_LITERAL_END.test(signature)) return false;
 	if (count(signature, ")") !== count(signature, "(") || count(signature, "]") !== count(signature, "[")) return false;
 	return DECLARATION_START.test(signature);
 }
@@ -245,6 +249,182 @@ export function renderOutline(outline: Outline, label: string): string[] {
 		`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? "" : "s"}`,
 		...flat.map(outlineRow),
 	];
+}
+
+/** Markdown heading item in AST hierarchy. */
+export interface MarkdownHeading {
+	level: number;
+	title: string;
+	line: number;
+	children?: MarkdownHeading[];
+}
+
+/** Outline representation of a Markdown document's heading hierarchy. */
+export interface MarkdownOutline {
+	totalLines: number;
+	headings: MarkdownHeading[];
+}
+
+/**
+ * Extracts heading hierarchy from markdown text, ignoring code blocks / fences.
+ */
+export function outlineMarkdown(code: string): MarkdownOutline | undefined {
+	if (!code.trim()) return undefined;
+	const lines = code.split(/\r?\n/);
+	if (lines.length > 0 && lines[lines.length - 1] === "") {
+		lines.pop();
+	}
+	const rawHeadings: MarkdownHeading[] = [];
+	let inFence = false;
+	let fenceMarker = "";
+	let startIdx = 0;
+
+	// Skip leading YAML front matter: --- ... ---
+	if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
+		for (let i = 1; i < lines.length; i++) {
+			if (/^\s*---\s*$/.test(lines[i])) {
+				startIdx = i + 1;
+				break;
+			}
+		}
+	}
+
+	for (let i = startIdx; i < lines.length; i++) {
+		const line = lines[i];
+		const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+		if (fenceMatch) {
+			const marker = fenceMatch[1];
+			if (!inFence) {
+				inFence = true;
+				fenceMarker = marker[0];
+			} else if (marker[0] === fenceMarker) {
+				inFence = false;
+				fenceMarker = "";
+			}
+			continue;
+		}
+		if (inFence) continue;
+
+		// ATX headings: # Heading
+		const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+		if (headingMatch) {
+			const level = headingMatch[1].length;
+			const title = headingMatch[2].trim().replace(/\s+#+\s*$/, "");
+			rawHeadings.push({ level, title, line: i + 1 });
+			continue;
+		}
+
+		// Setext headings: Line 1 text, Line 2 === (H1) or --- (H2)
+		if (i > 0 && lines[i - 1].trim().length > 0) {
+			const prevLine = lines[i - 1].trim();
+			// Ensure previous line was not a heading or list/hr item
+			if (!/^(?:#{1,6}\s|```|~~~|>|\*|-|\d+\.)/.test(prevLine)) {
+				if (/^={3,}\s*$/.test(line)) {
+					rawHeadings.push({ level: 1, title: prevLine, line: i });
+					continue;
+				} else if (/^-{3,}\s*$/.test(line)) {
+					rawHeadings.push({ level: 2, title: prevLine, line: i });
+					continue;
+				}
+			}
+		}
+	}
+
+	if (rawHeadings.length === 0) return undefined;
+	return { totalLines: lines.length, headings: rawHeadings };
+}
+
+/** Render markdown table-of-contents outline lines. */
+export function renderMarkdownOutline(outline: MarkdownOutline, label: string): string[] {
+	const count = outline.headings.length;
+	const minLevel = Math.min(...outline.headings.map(h => h.level));
+	const rows: string[] = [
+		`${label} · markdown · ${outline.totalLines} lines · ${count} section${count === 1 ? "" : "s"}`,
+	];
+
+	for (const h of outline.headings) {
+		const indentDepth = Math.max(0, h.level - minLevel);
+		const indent = "  ".repeat(indentDepth + 1);
+		const hashes = "#".repeat(h.level);
+		rows.push(`${indent}${hashes} ${h.title}  :${h.line}`);
+	}
+
+	return rows;
+}
+
+export interface GrepFileMatches {
+	path: string;
+	matches: Array<{ line: number; text: string }>;
+}
+
+/**
+ * Enriches grep matches in source files by attributing each match to its enclosing
+ * declaration signature chain (via tree-sitter AST).
+ */
+export function renderGrepOutline(
+	files: GrepFileMatches[],
+	outlineForFile: (path: string) => { outline?: Outline; lines: string[] } | undefined,
+): string[] | undefined {
+	const rows: string[] = [];
+	let enrichedAny = false;
+
+	for (const file of files) {
+		const source = outlineForFile(file.path);
+		if (!source || !source.outline || source.outline.declarations.length === 0) {
+			// Plain listing for files that cannot be parsed by tree-sitter
+			rows.push(`${file.path} · ${file.matches.length} match${file.matches.length === 1 ? "" : "es"}`);
+			for (const m of file.matches) {
+				rows.push(`  ${m.line}: ${m.text.trim()}`);
+			}
+			continue;
+		}
+
+		enrichedAny = true;
+		const outline = source.outline;
+		rows.push(`${file.path} · ${outline.language} · ${file.matches.length} match${file.matches.length === 1 ? "" : "es"}`);
+
+		// Group matches by enclosing declaration chain
+		type ChainGroup = {
+			chain: Declaration[];
+			matches: Array<{ line: number; text: string }>;
+		};
+		const groups: ChainGroup[] = [];
+
+		for (const m of file.matches) {
+			const chain = enclosingChain(outline.declarations, m.line, m.line);
+			const lastGroup = groups[groups.length - 1];
+			// Compare chain by innermost declaration line
+			const sameChain = lastGroup && (
+				(lastGroup.chain.length === 0 && chain.length === 0) ||
+				(lastGroup.chain.length > 0 && chain.length > 0 &&
+					lastGroup.chain[lastGroup.chain.length - 1].line === chain[chain.length - 1].line)
+			);
+			if (sameChain) {
+				lastGroup.matches.push(m);
+			} else {
+				groups.push({ chain, matches: [m] });
+			}
+		}
+
+		for (const group of groups) {
+			if (group.chain.length === 0) {
+				for (const m of group.matches) {
+					rows.push(`  ${m.line}: ${m.text.trim()}`);
+				}
+			} else {
+				const innermost = group.chain[group.chain.length - 1];
+				for (const decl of group.chain) {
+					rows.push(signatureRow(decl));
+				}
+				const indent = "  ".repeat(innermost.depth + 2);
+				for (const m of group.matches) {
+					rows.push(`${indent}${m.line}: ${m.text.trim()}`);
+				}
+			}
+		}
+	}
+
+	return enrichedAny ? rows : undefined;
 }
 
 // The innermost declaration chain (outermost first) whose span contains lines [start, end].
