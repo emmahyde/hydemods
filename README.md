@@ -19,7 +19,9 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - Reads and writes show the declaration outline. Writes add LSP diagnostics.
   - Edits show the declarations they touched. Ctrl+O shows the changed lines.
   - Background shell commands collapse to one line.
-- **TOON for the model.** The model gets JSON tool results as TOON, a compact table form that uses far fewer tokens. You still see the JSON tree.
+- **TOON tool results.** Structured results render as TOON in tool cards and model context. Eval unpacks printed JSON-like tool envelopes without executing them. Each cell keeps its source, status, timing, and errors. Oversized or unsupported output stays in the native view.
+  - Read and grep output inside Eval uses the same AST context as direct calls. Range outlines are shown only when the returned lines match the source.
+- **Eval command summaries.** A background tiny-model call adds a short intent summary to each Eval card. It uses `@tiny`, then `@smol`, and skips roles that resolve to the primary model. Calls are cached, limited to two at once, and cancelled after five seconds. Missing models or failures keep the original title; execution never waits for a summary. Disable with `/hydemods eval-command-summaries off`.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
 - **Runaway edit guard.** An `edit` call stops when its input repeats `*** End Patch` three times or passes 96 KB. The agent then retries with small hashline ops.
@@ -40,6 +42,9 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - A stuck tool call escalates: check-in at 6 minutes, second alert at 12, abort at 20.
   - The main session gets alerts only.
   - `HYDEMODS_STALL_MODEL_MIN` and `HYDEMODS_STALL_TOOL_STAGES` (for example `6,12,20`) change the timing.
+- **Internal URL browser.** `/browse [url]` or Ctrl+Shift+U opens a fullscreen browser over every internal scheme (`vault://`, `xd://`, `proc://`, `omp://`, `pr://`, ...): a scheme rail, a searchable list, and an inspector for the selected entry. Up/Down select, Right/Enter open, Left back, Tab inserts the URL into the editor, Esc closes. In the inline completion for an internal URL, the first item (`Browse ...`) opens the same browser at that URL.
+  - Ctrl+Shift+U opens at the internal URL nearest the end of the editor text when there is one.
+  - **Clickable links (macOS).** Run `/browse install-handler` once. It builds `~/Applications/OMP Link Handler.app`, an AppleScript applet registered for the `hydemods://` URL scheme. From then on, internal URLs in responses and tool cards are OSC 8 hyperlinks; Cmd+click one in iTerm2, Ghostty, Kitty, or WezTerm, and the browser opens on it in the OMP session that drew it (an open browser navigates instead). Links follow `tui.hyperlinks`; each OMP process listens on `~/.omp/hydemods/links/<key>.sock`. Without the handler, rows stay plain.
 
 <img width="1000" alt="AST-structured read output" src="https://github.com/user-attachments/assets/d8dde60d-e63c-40d0-9257-5d26e3c6a982" />
 <img width="1000" alt="AST-structured edit output" src="https://github.com/user-attachments/assets/ce8a4924-5510-431c-a90a-12d123dc60e4" />

@@ -4,6 +4,8 @@ import { DrawerView, type DrawerSelection } from "./drawer-view";
 import { drawerScheme, type DrawerAdapter, type DrawerPage } from "./drawer-types";
 import { replaceToken, type EditorProvider } from "./url-drawers";
 import { sanitizeTerminalText } from "./tool-output";
+import { findInternalUrls } from "./internal-links";
+import { HANDLER_APP, installLinkHandler } from "./link-bridge";
 
 const TOKEN = /(?:^|[\s"'`(<=])([a-z]+:\/\/[^\s"'`()<>]*)$/i;
 const WIDGET = "hydemods:reference-preview";
@@ -63,6 +65,11 @@ export class HelperDrawers {
    return typeof value === "function" ? value.bind(target) : value;
   } });
  }
+ /** A click on a transcript link (or a forwarded URL): steer the open browser, else open one there. */
+ openFromLink(uri: string) {
+  if (this.view && this.active) { void this.view.navigate(uri); return; }
+  if (this.context) void this.open(this.context, uri);
+ }
  async open(ctx: ExtensionContext, uri = "vault://", insertion?: { lines: string[]; line: number; col: number; prefix: string }) {
   if (!ctx.hasUI || this.active) return;
   if (!this.enabled()) { ctx.ui.notify("Enable Interactive URL drawers in /hydemods", "info"); return; }
@@ -115,8 +122,25 @@ export function registerHelperDrawers(
  onPreview?: (ctx: ExtensionContext, uri: string, page?: DrawerPage) => void,
 ) {
  const drawers = new HelperDrawers(adapters, enabled, onPreview);
- pi.registerCommand("browse", { description: "Browse internal URLs with searchable results and a resource inspector", handler: async (args, ctx) => { await drawers.open(ctx, args.trim() || "vault://"); } });
- pi.registerShortcut("ctrl+shift+u", { description: "Browse internal URL resources", handler: async ctx => { await drawers.open(ctx); } });
+ pi.registerCommand("browse", {
+  description: "Browse internal URLs with searchable results and a resource inspector; `install-handler` makes transcript links clickable",
+  handler: async (args, ctx) => {
+   const arg = args.trim();
+   if (arg === "install-handler") {
+    if (!ctx.hasUI) return;
+    try {
+     await installLinkHandler();
+     ctx.ui.notify(`Installed ${HANDLER_APP}; Cmd+click internal URLs in the transcript to open them here`, "info");
+    } catch (error) {
+     ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+    }
+    return;
+   }
+   await drawers.open(ctx, arg || "vault://");
+  },
+ });
+ // Opens at the internal URL nearest the end of the editor (where the cursor usually is), else the vault root.
+ pi.registerShortcut("ctrl+shift+u", { description: "Browse internal URL resources (the one under the cursor when there is one)", handler: async ctx => { await drawers.open(ctx, ctx.hasUI ? findInternalUrls(ctx.ui.getEditorText()).at(-1) ?? "vault://" : "vault://"); } });
  pi.on("session_shutdown", async () => { drawers.reset(); });
  pi.on("session_switch", async (_event, ctx) => { drawers.install(ctx); });
  pi.on("session_branch", async (_event, ctx) => { drawers.install(ctx); });

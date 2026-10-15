@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
-import { Box, code as codeNode, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { node as nativeNode } from "@oh-my-pi/pi-tui/native/describe";
-import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
+import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { readFileSync, statSync } from "node:fs";
@@ -27,10 +26,16 @@ import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-co
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
+import { decodeEvalOutput } from "./lib/eval-output";
+import { EvalSummaryCache } from "./lib/eval-summary";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { registerHelperDrawers } from "./lib/helper-drawers";
+import { installInternalLinks, linkComponentRows, linkTarget } from "./lib/internal-links";
+import { linkHandlerInstalled, startLinkServer, type LinkServer } from "./lib/link-bridge";
+import { drawerScheme } from "./lib/drawer-types";
+import { randomUUID } from "node:crypto";
 import { vaultDrawer } from "./lib/drawer-vault";
 import { contentDrawer } from "./lib/drawer-content";
 import { runtimeDrawer } from "./lib/drawer-runtime";
@@ -83,10 +88,17 @@ const TWEAK_DEFS: TweakDef[] = [
 	},
 	{
 		name: "tool-results-toon",
-		title: "TOON for the model",
-		description: "Hands JSON and MCP tool results to the model as TOON, a compact table-like text form.",
+		title: "TOON tool results",
+		description: "Formats structured tool results as TOON in cards and model context.",
 		category: "Interface",
-		render: () => "TOON (Token-Oriented Object Notation) writes uniform arrays as one header row plus one row per item, so the same data costs far fewer tokens than JSON. Unpacks native JSON, eval outputs, and MCP fenced ```json blocks automatically; you still see OMP's JSON tree.",
+		render: () => "Unpacks JSON, printed Eval tool envelopes, and MCP JSON blocks. Uniform arrays share one header. Read and grep results retain AST context.",
+	},
+	{
+		name: "eval-command-summaries",
+		title: "Eval command summaries",
+		description: "Uses the tiny model to describe each Eval command without delaying execution.",
+		category: "Interface",
+		render: () => "Shows a short intent summary when ready. Uses @tiny or @smol, never the primary model; falls back to the original title on failure.",
 	},
 	{
 		name: "last-prompt-drawer",
@@ -196,7 +208,7 @@ const DEFAULT_COLLAPSED_LINES = 5;
 const collapsedLinesSetting = integerSetting(
 	"collapsed-lines",
 	"Collapsed tool card lines",
-	"Lines shown in a collapsed tool card before the omission marker.",
+	"Content rows shown in a collapsed tool card; an inline glyph marks the hidden rows.",
 	DEFAULT_COLLAPSED_LINES,
 );
 
@@ -718,27 +730,14 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 					? tree.filter((_, index) => !/^\s{3,}[+−→] /.test(rawLines[index]))
 					: tree),
 			];
-			if (selected.length > limit) {
-				if (structured.format === "outline" || structured.format === "edit-outline") {
-					// Outline rows are a list: the last row carries no summary, so count the rest.
-					const shown = Math.max(1, limit - 1);
-					selected = [...selected.slice(0, shown), theme.fg("muted", `… ${selected.length - shown} more`)];
-				} else if (limit <= 1) {
-					// One row is all the space there is, so the first content line carries the
-					// omission mark itself instead of the card showing nothing but `…`.
-					selected = [`${renderedContent[0]} ${theme.fg("muted", "…")}`];
-				} else {
-					const omission = theme.fg("muted", "…");
-					selected = limit < 3
-						? [...renderedContent.slice(0, limit - 1), theme.fg("muted", `… ${renderedContent.length - (limit - 1)} more`)]
-						: [...renderedContent.slice(0, limit - 2), omission, renderedContent[renderedContent.length - 1]];
-				}
-			}
+			selected = collapseTextLines(selected, limit, false, {
+				edge: structured.format === "outline" || structured.format === "edit-outline" ? "head" : "middle",
+				marker: hidden => theme.fg("muted", `⋯${hidden}`),
+			});
 			if (diagnosticsAt >= 0) {
 				const messages = renderedContent.slice(diagnosticsAt + 1);
-				const kept = messages.slice(0, 3);
+				const kept = collapseTextLines(messages, 3, false, { edge: "head", marker: hidden => theme.fg("muted", `⋯${hidden}`) });
 				selected = [...selected, renderedContent[diagnosticsAt], ...kept];
-				if (messages.length > kept.length) selected.push(theme.fg("muted", `       … ${messages.length - kept.length} more`));
 			}
 			return selected.map((line, index) =>
 				padToolBlockLine(truncateToWidth(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
@@ -1223,9 +1222,7 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 // Collapsed outlines keep the first rows and count the rest; expanded shows every row.
 function outlineRows(outline: string[], expanded: boolean, limit: number, theme: Theme): string[] {
 	const colored = outline.map(line => colorizeOutlineLine(line, theme));
-	if (expanded || colored.length <= limit) return colored;
-	const shown = Math.max(1, limit - 1);
-	return [...colored.slice(0, shown), theme.fg("muted", `… ${colored.length - shown} more`)];
+	return collapseTextLines(colored, limit, expanded, { edge: "head", marker: hidden => theme.fg("muted", `⋯${hidden}`) });
 }
 
 function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
@@ -1294,7 +1291,13 @@ function renderReadTree(rows: ReadTreeRow[], state: ReadGroupState, theme: Theme
 	return lines.map(line => truncateToWidth(line, width));
 }
 
-type CardTakeover = { active: () => boolean; display: ToolDisplayState };
+type CardTakeover = {
+	active: () => boolean;
+	display: ToolDisplayState;
+	summary?: (language: string, code: string) => string | undefined;
+	/** Click target for internal URLs in card rows, or undefined while links have nowhere to go. */
+	linkTarget?: () => ((uri: string) => string) | undefined;
+};
 
 // LSP diagnostics ride along in edit/write details (top level, in `meta`, or per file). The
 // edit outline draws its own; any other hydemods view would drop them, so those results keep
@@ -1310,6 +1313,121 @@ function carriesDiagnostics(details: unknown): boolean {
 // takeover off, still streaming, plain text hydemods cannot improve, a JSON document OMP already
 // shows as a tree, or a payload past the size cap. Failures get the same card in error colour
 // rather than a different one.
+
+// Eval envelopes are data, never executable source.
+function evalStructuredValue(value: unknown): StructuredText {
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		const envelope = value as { text?: unknown; details?: ReadOutlineDetails; hasError?: boolean };
+		if (typeof envelope.text === "string" && !envelope.hasError) {
+			const source = envelope.details && readSourceFsPath(envelope.details as Parameters<typeof readSourceFsPath>[0]);
+			const result = { content: [{ type: "text", text: envelope.text }], details: envelope.details };
+			const outline = source && readOutlineStructured(result, { path: source });
+			if (outline) return outline;
+			if (Object.keys(value).every(key => key === "text")) return evalStructuredValue(envelope.text);
+			if (envelope.details && typeof (envelope.details as { displayContent?: unknown }).displayContent === "string") {
+				const grep = grepOutlineStructured(result);
+				if (grep) return grep;
+			}
+		}
+	}
+	if (typeof value === "string") {
+		const raw = sanitizeTerminalText(value);
+		if (/^\s*\*\d+[:│]|^#{1,3} .+/m.test(raw)) {
+			const grep = grepOutlineStructured({ content: [{ type: "text", text: raw }] });
+			if (grep) return grep;
+		}
+		const blocks = raw.split(/(?=^\[[^\]\r\n]+#[\da-f]{4}\]\r?$)/im);
+		let changed = false;
+		const rendered = blocks.map(block => {
+			const header = /^\[([^\]\r\n]+)#[\da-f]{4}\]\r?\n/i.exec(block);
+			if (!header) return block;
+			const lines = block.slice(header[0].length).split(/\r?\n/);
+			const numbers: Array<number | null> = [];
+			const sourceLines: string[] = [];
+			let at = 0;
+			for (; at < lines.length; at++) {
+				const row = /^(\d+):(.*)$/.exec(lines[at]);
+				if (row) { numbers.push(Number(row[1])); sourceLines.push(row[2]); }
+				else if (/^\s*…\s*$/.test(lines[at])) { numbers.push(null); sourceLines.push("…"); }
+				else break;
+			}
+			if (!numbers.some(n => n !== null)) return block;
+			const outline = readOutlineStructured({ content: [], details: {
+				resolvedPath: header[1], truncation: { truncated: true },
+				displayContent: { text: sourceLines.join("\n"), startLine: numbers.find(n => n !== null), lineNumbers: numbers },
+			} }, { path: header[1] });
+			if (!outline) return block;
+			changed = true;
+			return outline.text + "\n" + lines.slice(at).join("\n");
+		});
+		if (changed) return { text: rendered.join(""), format: "outline" };
+	}
+	return structuredResult(value);
+}
+
+function formatEvalPrintedOutput(text: string, theme: Theme): string {
+	if (cappedRenderPayload(text) === undefined) return text;
+	return decodeEvalOutput(text).map(part => {
+		try {
+			const structured = evalStructuredValue("value" in part ? part.value : part.raw);
+			return structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
+		} catch {
+			// Malformed tool metadata must not prevent the original output from being read.
+			return sanitizeTerminalText(part.raw);
+		}
+	}).join("");
+}
+
+type EvalViewArgs = { code?: string; language?: string; title?: string; cells?: EvalViewArgs[] };
+type EvalViewResult = { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean };
+
+function evalViewArgs(args: unknown, takeover: CardTakeover): unknown {
+	if (!args || typeof args !== "object") return args;
+	const input = args as EvalViewArgs;
+	const summarize = (cell: EvalViewArgs) => ({ ...cell,
+		title: typeof cell.code === "string" ? takeover.summary?.(cell.language ?? "python", cell.code) ?? cell.title : cell.title,
+	});
+	return input.cells ? { ...input, cells: input.cells.map(summarize) } : summarize(input);
+}
+
+// Freeze settled outlines against their returned snapshot, not later disk contents.
+const evalViewOutputs = new WeakMap<object, { cells?: string[]; output?: string; json?: string }>();
+function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, takeover: CardTakeover): EvalViewResult {
+	const details = (result.details ?? {}) as { cells?: Array<EvalViewArgs & { output: string; hasMarkdown?: boolean; status?: string }>; jsonOutputs?: unknown[] };
+	if (details.jsonOutputs?.some(value => cappedRenderPayload(value) === undefined)) return result;
+	let formatted = partial ? undefined : evalViewOutputs.get(result);
+	if (!partial && !formatted) {
+		const json = details.jsonOutputs?.map(value => {
+			try {
+				const structured = evalStructuredValue(value);
+				return structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
+			} catch {
+				return sanitizeTerminalText(JSON.stringify(value, null, 2) ?? String(value));
+			}
+		}).join("\n\n");
+		formatted = {
+			cells: details.cells?.map(cell => cell.hasMarkdown ? cell.output : formatEvalPrintedOutput(cell.output, theme)),
+			output: details.cells?.length ? undefined : formatEvalPrintedOutput(toolResultText(result.content) ?? "", theme),
+			json,
+		};
+		evalViewOutputs.set(result, formatted);
+	}
+	const cells = details.cells?.map((cell, index) => {
+		const summary = takeover.summary?.(cell.language ?? "python", cell.code ?? "");
+		const extra = index === details.cells!.length - 1 ? formatted?.json : undefined;
+		return { ...cell, title: summary ?? cell.title,
+			output: [formatted?.cells?.[index] ?? cell.output, extra].filter(Boolean).join("\n\n"),
+		};
+	});
+	const output = formatted && !cells?.length ? [formatted.output, formatted.json].filter(Boolean).join("\n\n") : undefined;
+	return { ...result,
+		content: output === undefined ? result.content : [
+			{ type: "text", text: output },
+			...(Array.isArray(result.content) ? result.content.filter(item => item.type !== "text") : []),
+		],
+		details: { ...details, ...(cells ? { cells } : {}), ...(formatted ? { jsonOutputs: [] } : {}) },
+	};
+}
 function hydemodsResultComponent(toolName: string, result: { content: unknown; details?: unknown; isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme, args: unknown, takeover: CardTakeover) {
 	if (!takeover.active() || options.isPartial) return undefined;
 	// A rejected edit is routine (stale anchor, retry follows): one line, full text on Ctrl+O.
@@ -1369,73 +1487,48 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 		if (NATIVE_CARD_TOOLS[name]) continue;
 		const wrapped: ToolRenderer = {
 			...original,
+			renderCall(args, options, theme) {
+				return original.renderCall(name === "eval" && takeover.active() ? evalViewArgs(args, takeover) : args, options, theme);
+			},
 			renderResult(result, options, theme, args) {
-				const evalOptions = options as typeof options & {
-					renderContext?: { previewLines?: number;[key: string]: unknown };
-				};
-				const fallbackOptions = name === "eval"
-					? {
-						...evalOptions,
-						renderContext: {
-							...evalOptions.renderContext,
-							previewLines: takeover.display.collapsedLines,
-						},
-					}
-					: options;
-				return hydemodsResultComponent(name, result, options, theme, args, takeover)
-					?? original.renderResult(result, fallbackOptions, theme, args);
+				if (name === "eval") {
+					const nativeOptions = { ...options, renderContext: {
+						...(options as { renderContext?: object }).renderContext,
+						previewLines: takeover.display.collapsedLines,
+					} };
+					return original.renderResult(
+						takeover.active() ? evalViewResult(result, options.isPartial, theme, takeover) : result,
+						nativeOptions, theme, takeover.active() ? evalViewArgs(args, takeover) : args,
+					);
+				}
+				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
+				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
 			},
 		};
+		if (original.describeCall) wrapped.describeCall = (args, options) =>
+			original.describeCall!(name === "eval" && takeover.active() ? evalViewArgs(args, takeover) : args, options);
 		if (original.describeResult) {
 			wrapped.describeResult = (result, options, args) => {
+				if (name === "eval") return original.describeResult!(
+					takeover.active() ? evalViewResult(result, options.isPartial, uiTheme, takeover) : result,
+					{ ...options, renderContext: { ...(options as { renderContext?: object }).renderContext, previewLines: takeover.display.collapsedLines } },
+					takeover.active() ? evalViewArgs(args, takeover) : args,
+				);
 				if (takeover.active() && !options.isPartial) {
 					const resultText = toolResultText(result.content);
 					if (resultText !== undefined && cappedRenderPayload(resultText) !== undefined) {
 						const payload = notebookPayload(name, args, result.isError) ?? extractToolPayload({ toolName: name, result });
 						if (cappedRenderPayload(payload) !== undefined) {
-							const details: ToolCardDetails = { toolName: name, result: payload, isError: result.isError, cwd: process.cwd() };
-							const structured = structureToolResult(details);
-							if (structured.format === "toon") {
-								const originalView = original.describeResult?.(result, options, args) ?? original.describeCall?.(args, options);
-								const toonNode = codeNode(structured.text, { lang: "yaml" });
-								const originalBody = originalView?.body ?? [];
-								// In eval or multi-part views, preserve the cell input / preamble and replace or append output
-								let body: NativeChild[];
-								if (name === "eval" && originalBody.length > 0) {
-									body = originalBody.map((nodeItem): NativeChild => {
-										// The eval card's wire shape: a cell row whose children carry roles; cast once, rebuild as NativeNode.
-										type RoleNode = { k: string; p?: { role?: string }; c?: RoleNode[] };
-										const itemObj = nodeItem as unknown as RoleNode;
-										if (itemObj?.p?.role === "omp.tool.eval.cell") {
-											const cellChildren = (itemObj.c ?? []).map(child => {
-												if (child?.p?.role === "omp.tool.eval.result") {
-													return {
-														...child,
-														c: [
-															nativeNode("icon", { name: "arrow-right", role: "omp.tool.eval.prompt", aria: "Output" }),
-															nativeNode("col", { role: "omp.tool.eval.outputs" }, [toonNode]),
-														],
-													};
-												}
-												return child;
-											});
-											return { ...itemObj, c: cellChildren } as unknown as NativeNode;
-										}
-										return nodeItem;
-									});
-								} else {
-									body = [toonNode];
-								}
-								return {
-									...originalView,
-									body,
-									preview: { lines: takeover.display.collapsedLines },
-								};
-							}
+							const structured = structureToolResult({ toolName: name, result: payload, isError: result.isError, cwd: process.cwd() });
+							if (structured.format === "toon") return {
+								...original.describeResult!(result, options, args),
+								body: [codeNode(structured.text, { lang: "yaml" })],
+								preview: { lines: takeover.display.collapsedLines },
+							};
 						}
 					}
 				}
-				return original.describeResult?.(result, options, args);
+				return original.describeResult!(result, options, args);
 			};
 		}
 		toolRenderers[name] = wrapped;
@@ -1452,8 +1545,10 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 		toolRenderers[name] = {
 			mergeCallAndResult: true,
 			renderCall: (args, options, theme) => fallback(args, undefined, options, theme),
-			renderResult: (result, options, theme, args) =>
-				hydemodsResultComponent(name, result, options, theme, args, takeover) ?? fallback(args, result, options, theme),
+			renderResult: (result, options, theme, args) => {
+				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
+				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? fallback(args, result, options, theme);
+			},
 		};
 	}
 }
@@ -1493,7 +1588,7 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 		const chooser = [...options, custom].filter(Boolean).join(theme.fg("muted", "·"));
 		return [
 			` ${marker} ${chooser}  ${theme.bold("Collapsed card lines")}`,
-			theme.fg("muted", "           Lines a collapsed tool card shows before the omission marker."),
+			theme.fg("muted", "           Content rows per collapsed card; ⋯ marks the hidden rows inline."),
 			"           ←/→ pick a preset; +/- step by one; also /hydemods collapsed-lines N.",
 		];
 	};
@@ -1664,6 +1759,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			hexFor: (surface, light) => resolveBackground(readSetting(BG_SETTINGS[surface].preset), readSetting(BG_SETTINGS[surface].hex), light),
 			liveTheme: () => uiTheme as unknown as ThemeLookups,
 		});
+		installInternalLinks(AssistantMessageComponent.prototype, () => linkTargetFor());
 	};
 	for (const surface of SURFACES) {
 		for (const setting of [BG_SETTINGS[surface].preset, BG_SETTINGS[surface].hex]) {
@@ -1675,6 +1771,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const restoreToolDisplay = (ctx: ExtensionContext) => {
 		lastCtx = ctx;
 		ensureBackgrounds();
+		ensureLinkServer();
 		display.collapsedLines = readSetting(collapsedLinesSetting);
 		repaintToolCards(ctx);
 	};
@@ -1686,7 +1783,16 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// hydemods draws inside OMP's tool card (never beside it). One native card per call; Ctrl+O
 	// expansion and hidden tool output apply to it as usual. The hotkey below toggles whether
 	// hydemods or the original renderer fills the result view for the session.
-	const takeover: CardTakeover = { display, active: () => display.cardsOn && isTweakEnabled("integrated-tool-expansion") };
+	const evalSummaries = new EvalSummaryCache();
+	const takeover: CardTakeover = {
+		display, active: () => display.cardsOn && isTweakEnabled("integrated-tool-expansion"),
+		summary: (language, code) => {
+			if (!lastCtx || !lastCtx.hasUI || !isTweakEnabled("eval-command-summaries")) return;
+			evalSummaries.request(language, code, lastCtx, () => { if (lastCtx) repaintToolCards(lastCtx); });
+			return evalSummaries.get(language, code);
+		},
+		linkTarget: () => linkTargetFor(),
+	};
 	installNativeCardTakeover(takeover);
 	installReadGroupTakeover(takeover);
 	// When hydemods tool cards are active, OMP's inline read previews are redundant and
@@ -1975,6 +2081,21 @@ export default function hydemods(pi: ExtensionAPI): void {
 		() => isTweakEnabled("internal-url-drawers"),
 		(ctx, uri, page) => { urlPreviews.showPreview(ctx, uri, page); },
 	);
+	// Terminal-native clicks: transcript rows link internal URLs to hydemods://open?s=<key>&u=<uri>;
+	// the handler app (/browse install-handler) forwards a click to this process's socket.
+	const linkKey = randomUUID().slice(0, 8);
+	let linkServer: LinkServer | undefined;
+	const linkTargetFor = (): ((uri: string) => string) | undefined =>
+		linkServer && isTweakEnabled("internal-url-drawers") && linkHandlerInstalled() ? uri => linkTarget(linkKey, uri) : undefined;
+	const ensureLinkServer = () => {
+		if (linkServer) return;
+		try {
+			linkServer = startLinkServer(linkKey, uri => { if (drawerScheme(uri)) helperDrawers.openFromLink(uri); });
+		} catch {
+			// No socket, no links: rows stay plain and the browser is still reachable by keyboard.
+		}
+	};
+	pi.on("session_shutdown", async () => { linkServer?.stop(); linkServer = undefined; });
 	const installDrawers = (ctx: ExtensionContext) => {
 		helperDrawers.install(ctx);
 		if (ctx.hasUI) {
@@ -2292,6 +2413,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	for (const tweak of TWEAKS) if (tweak.name in GATED_TOOLS) watchSetting(tweak.setting, syncGatedTools);
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
+		evalSummaries.clear();
 		stopStallWatch?.();
 		stopStallWatch = undefined;
 		const sessionFile = ctx.sessionManager.getSessionFile();
@@ -2338,7 +2460,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("session_tree", onSession);
 	// Emitted when the session is disposed (exit, Ctrl+C/D, signals), which also cancels its async
 	// jobs; cancelling here aborts the loop and its shell check before the manager drains.
-	pi.on("session_shutdown", () => { monitors.cancelAll(); });
+	pi.on("session_shutdown", () => { monitors.cancelAll(); evalSummaries.clear(); lastCtx = undefined; });
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const prompt = typeof event.prompt === "string" ? event.prompt : "";
