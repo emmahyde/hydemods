@@ -52,9 +52,13 @@ export type MonitorProgressReporter = (text: string, output: string) => void | P
  * The slice of the host's `AsyncJobManager` (owned by the calling agent's session) that a monitor
  * needs. Supplied by the caller so this module stays host-free and testable; see `lib/host-runtime.ts`
  * for the live wiring.
+ *
+ * The native job is a mirror, never the engine: the registry's own loop drives the command and the
+ * wake whether or not the host ever runs the job body. The body only waits for the monitor to settle
+ * (so proc:// shows it alive), and its abort signal is the proc://<id>/kill bridge into the loop.
  */
 export type MonitorJobsHost = {
-	/** Register the monitor's whole loop as one native background job; returns the native job id. */
+	/** Register a native background job that mirrors the monitor; returns the native job id. */
 	register(label: string, run: (signal: AbortSignal, report: MonitorProgressReporter) => Promise<string>): string;
 	/** Cancel a running native job this session owns; false when it already settled. */
 	cancel(jobId: string): boolean;
@@ -190,8 +194,9 @@ export class MonitorRegistry {
 
 	/**
 	 * Starts a monitor; a running monitor with the same name is replaced. Resolves when the monitor
-	 * settles (or is cancelled/replaced). With `host`, the loop is also registered as one native
-	 * async job; if that registration fails the monitor still runs, host-less, exactly as without one.
+	 * settles (or is cancelled/replaced). The loop always runs here, on the registry's own signal.
+	 * With `host`, a native job mirrors it: label updates for proc:// listings, and the job's abort
+	 * (proc://<id>/kill) cancels the monitor. A host that refuses or never runs the job changes nothing.
 	 */
 	start(spec: MonitorSpec, host?: MonitorJobsHost): Promise<MonitorResult | undefined> {
 		if (spec.until !== undefined) new RegExp(spec.until); // fail fast on a bad regex
@@ -199,26 +204,28 @@ export class MonitorRegistry {
 		const run: Running = { spec, startedAt: this.#deps.now(), runs: 0, events: 0, controller: new AbortController(), settled: Promise.resolve(undefined) };
 		// Register the map entry first so a replaced run's late settle never touches the new owner.
 		this.#running.set(spec.name, run);
-		const body = (signal: AbortSignal, report?: MonitorProgressReporter) =>
-			spec.mode === "stream" ? this.#stream(run, signal, report) : this.#loop(run, signal, report);
+		let reporter: MonitorProgressReporter | undefined;
+		const body = spec.mode === "stream" ? this.#stream(run, run.controller.signal, (t, o) => reporter?.(t, o)) : this.#loop(run, run.controller.signal, (t, o) => reporter?.(t, o));
+		run.settled = body.then(result => this.#settle(run, result));
 		if (host) {
-			const { promise, resolve } = Promise.withResolvers<MonitorResult | undefined>();
 			try {
 				const jobId = host.register(formatMonitorLabel(spec, { checks: 0 }), async (signal, report) => {
-					const result = await body(signal, report);
-					resolve(this.#settle(run, result));
+					reporter = report;
+					// The loop may already have published before the mirror attached; catch the row up.
+					this.#publish(run, report);
+					// proc://<id>/kill: only cancel while this run still owns its name; a replaced run's
+					// late kill must not touch the new owner.
+					signal.addEventListener("abort", () => { if (this.#running.get(spec.name) === run) this.cancel(spec.name); }, { once: true });
+					const result = await run.settled;
 					return result ? formatMonitorResult(spec, result) : `Monitor "${spec.name}" stopped.`;
 				});
 				run.host = host;
 				run.jobId = jobId;
-				run.settled = promise;
 				host.suppressDelivery(jobId);
-				return run.settled;
 			} catch {
 				// The native job layer is an extra; a host that refuses the registration must not stop the monitor.
 			}
 		}
-		run.settled = body(run.controller.signal).then(result => this.#settle(run, result));
 		return run.settled;
 	}
 

@@ -414,4 +414,37 @@ describe("monitors with a native job host", () => {
 		expect(notified).toHaveLength(1);
 		expect(registry.list()).toHaveLength(0);
 	});
+
+	test("a host that accepts the job but never runs its body does not stop the monitor", async () => {
+		const host: MonitorJobsHost = {
+			register: () => "bg_never",
+			cancel: () => false,
+			suppressDelivery: () => { },
+			setLabel: () => { },
+		};
+		const notified: MonitorResult[] = [];
+		const registry = new MonitorRegistry({ exec: async () => ({ code: 0, stdout: "done", stderr: "" }), notify: (_s, r) => { notified.push(r); } });
+		const result = await registry.start(spec(), host);
+		expect(result?.outcome).toBe("satisfied");
+		expect(notified).toHaveLength(1);
+		expect(registry.list()).toHaveLength(0);
+	});
+
+	test("the native job's abort (proc://<id>/kill) cancels the monitor silently", async () => {
+		const h = nativeHarness();
+		const notified: MonitorResult[] = [];
+		const registry = new MonitorRegistry({
+			exec: (_command, _cwd, signal) => {
+				const { promise, reject } = Promise.withResolvers<{ code: number; stdout: string; stderr: string }>();
+				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				return promise;
+			},
+			notify: (_s, r) => { notified.push(r); },
+		});
+		const settled = registry.start(spec(), h.host);
+		h.only().controller.abort();
+		expect(await settled).toBeUndefined();
+		expect(notified).toEqual([]);
+		expect(registry.list()).toHaveLength(0);
+	});
 });
