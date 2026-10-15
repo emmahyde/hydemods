@@ -1227,7 +1227,6 @@ function outlineRows(outline: string[], expanded: boolean, limit: number, theme:
 
 function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
 	return collapseTextLines(prose, limit, expanded).map(line => {
-		if (line.startsWith("… ")) return theme.fg("muted", line);
 		// Check for line-numbered source code output: e.g. "4:describe(...)" or "   4│ const x = 1;"
 		const lineNumbered = /^(\s*\*?\d+[:│])\s*(.*)$/.exec(line);
 		if (lineNumbered) {

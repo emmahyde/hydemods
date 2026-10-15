@@ -29,11 +29,11 @@ test("visual wrapping keeps the glyph within the content budget at narrow widths
   const result = fixture();
   result.details.cells[0].output = "long data row ".repeat(30);
   const output = compactEvalResult(result, { expanded: false, limit: 3, width, theme }).details.cells[0].output;
-  const lines = output.split("\n");
-  expect(lines).toHaveLength(3);
-		if (width >= 20) expect(plain(output)).toContain("[...]");
-  for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(Math.max(1, width - 4));
- }
+		const lines = output.split("\n");
+		expect(lines).toHaveLength(3);
+		expect(plain(lines[lines.length - 1])).toMatch(width >= 20 ? /\[\.\.\.\]$/ : /…$/);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(Math.max(1, width - 4));
+	}
 });
 
 test("literal omission text is content, not a renderer control", () => {

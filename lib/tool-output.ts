@@ -42,11 +42,11 @@ export function collapseTextLines(
 	lines: string[],
 	limit: number,
 	expanded: boolean,
-	options: { edge?: "head" | "middle"; marker?: (hidden: number) => string } = {},
+	options: { marker?: string | (() => string) } = {},
 ): string[] {
 	const count = Math.max(1, Math.floor(limit));
 	if (expanded || lines.length <= count) return lines;
-	const marker = options.marker?.(lines.length - count) ?? "[...]";
+	const marker = typeof options.marker === "function" ? options.marker() : (options.marker ?? "[...]");
 	const shown = lines.slice(0, count);
 	const last = shown[shown.length - 1];
 	shown[shown.length - 1] = last.trimEnd() ? `${last.trimEnd()} ${marker}` : marker;
