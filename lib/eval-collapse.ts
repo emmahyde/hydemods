@@ -2,10 +2,10 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-m
 import { outputBlockContentWidth } from "@oh-my-pi/pi-tui/render";
 import { getMarkdownTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
-import { cappedRenderPayload, collapseTextLines } from "./tool-output";
+import { cappedRenderPayload, collapseTextLines, stripGeneratedNoticeFooter } from "./tool-output";
 
 type Result = { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean };
-type Cell = { output: string; hasMarkdown?: boolean; status?: string };
+type Cell = { code?: string; output: string; textOutput?: string; hasMarkdown?: boolean; status?: string };
 type Options = { expanded: boolean; limit: number; width?: number; theme: Theme; output?: string };
 
 /** Reserve the fold glyph even when a content row reaches the right edge. */
@@ -24,18 +24,32 @@ export function compactEvalResult<T extends Result>(result: T, options: Options)
 	const width = options.width === undefined ? undefined : outputBlockContentWidth(options.width);
 	const compact = (output: string, markdown = false): string => {
 		if (cappedRenderPayload(output) === undefined) return output;
+		const stripped = stripGeneratedNoticeFooter(output);
 		const rows = markdown && width !== undefined
-			? new Markdown(output, 0, 0, getMarkdownTheme()).render(width)
-			: output.split(/\r?\n/).flatMap(line => width === undefined ? [line] : wrapTextWithAnsi(line.replace(/\t/g, "  "), width));
+			? new Markdown(stripped, 0, 0, getMarkdownTheme()).render(width)
+			: stripped.split(/\r?\n/).flatMap(line => width === undefined ? [line] : wrapTextWithAnsi(line.replace(/\t/g, "  "), width));
 		const shown = collapseTextLines([...rows], options.limit, false, { marker: () => options.theme.fg("dim", "[...]") });
+		return shown.map(line => width === undefined ? line : fitCollapseLine(line, width)).join("\n");
+	};
+	const compactCode = (code: string): string => {
+		if (cappedRenderPayload(code) === undefined) return code;
+		const rows = code.split(/\r?\n/);
+		const shown = collapseTextLines(rows, options.limit, false, { marker: () => options.theme.fg("dim", "[...]") });
 		return shown.map(line => width === undefined ? line : fitCollapseLine(line, width)).join("\n");
 	};
 	const details = result.details as { cells?: Cell[] } | undefined;
 	if (details?.cells?.length) return { ...result, details: { ...details,
-		cells: details.cells.map(cell => ({ ...cell,
-			output: compact(cell.output, cell.hasMarkdown === true && cell.status !== "error"),
-			...(options.width !== undefined && cappedRenderPayload(cell.output) !== undefined ? { hasMarkdown: false } : {}),
-		})),
+		cells: details.cells.map(cell => {
+			const sourceOutput = cell.textOutput ?? cell.output;
+			const compactedOutput = compact(sourceOutput, cell.hasMarkdown === true && cell.status !== "error");
+			return {
+				...cell,
+				...(typeof cell.code === "string" ? { code: compactCode(cell.code) } : {}),
+				output: compactedOutput,
+				...(cell.textOutput !== undefined ? { textOutput: compactedOutput } : {}),
+				...(options.width !== undefined && cappedRenderPayload(sourceOutput) !== undefined ? { hasMarkdown: false } : {}),
+			};
+		}),
 	} };
 	return { ...result, content: result.content.map(block => block.type === "text" && typeof block.text === "string"
 		? { ...block, text: compact(block.text) } : block) };

@@ -1,6 +1,7 @@
 // Display-only presentation of a file excerpt a Read returned. Nothing here touches the
 // result handed to the model: it takes strings in and returns new ones.
 import { extensionOf, stripComments, stripLineNumbers } from "./source-text";
+import { stripGeneratedNoticeFooter } from "./tool-output";
 
 // `[path#<snapshot>]` on the first line. The snapshot token is hex of either case.
 const SNAPSHOT_HEADER = /^\[([^\]#\r\n]+)#[\da-f]+\]\r?(?:\n|$)/i;
@@ -29,7 +30,7 @@ export function presentReadExcerpt(input: ReadExcerptInput): ReadExcerptDisplay 
 	const source = (input.displayContent?.text ?? input.text).replace(/\r\n/g, "\n");
 	const sourceHeader = SNAPSHOT_HEADER.exec(source);
 	const path = input.path ?? sourceHeader?.[1] ?? SNAPSHOT_HEADER.exec(input.text)?.[1];
-	const rest = sourceHeader ? source.slice(sourceHeader[0].length) : source;
+	const rest = stripGeneratedNoticeFooter(sourceHeader ? source.slice(sourceHeader[0].length) : source);
 	const body = stripComments(stripLineNumbers(rest, 1).text, path ? extensionOf(path) : undefined);
 	if (input.filenameShown || !path) return { body };
 	return { header: `[${path}${input.selector ? `:${input.selector}` : ""}]`, body };

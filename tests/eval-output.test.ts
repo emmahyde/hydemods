@@ -15,6 +15,11 @@ test("reads inspect literals with quoted, identifier, and numeric keys and trail
 	expect(values("[]\n{}\n[0,-0,1.25,1e-5,1E+3]")).toEqual([[], {}, [0, -0, 1.25, 1e-5, 1000]]);
 });
 
+test("reads Python repr dicts and lists with True, False, None and skips artifact notices", () => {
+	const pyRepr = "{'status': 'ok', 'valid': True, 'failed': False, 'extra': None, 'items': [{'id': 1}, {'id': 2}]}\n[Showing lines 1-1 of 50 (20.0KB limit). Read artifact://99 for full output]";
+	expect(values(pyRepr)).toEqual([{ status: "ok", valid: true, failed: false, extra: null, items: [{ id: 1 }, { id: 2 }] }]);
+});
+
 test("splits consecutive line-start records and retains every prose and whitespace byte", () => {
 	const text = "Starting result\r\n  { id: 1 }  \r\n\t[ { id: 2 }, { id: 3 } ]\n\nFinished.\nWall time: 0.25 seconds\nCommand exited with code 0";
 	const records = decodeEvalOutput(text);

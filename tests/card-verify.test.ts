@@ -8,11 +8,10 @@ describe("card verify harness for TOON output", async () => {
 		console.warn("Skipping harness test: omp not in PATH");
 		return;
 	}
-	const hostDirectory = dirname(realpathSync(ompPath));
-	const themeModule = await import(Bun.resolveSync("@oh-my-pi/pi-tui/theme", hostDirectory));
+	const themeModule = await import("@oh-my-pi/pi-tui/theme");
 	themeModule.ensureThemeSync();
 
-	const { toolRenderers } = await import(Bun.resolveSync("@oh-my-pi/pi-tui/tools", hostDirectory));
+	const { toolRenderers } = await import("@oh-my-pi/pi-tui/tools");
 
 	// Load extension takeover
 	const extModule = await import("../index");
@@ -103,13 +102,13 @@ describe("card verify harness for TOON output", async () => {
 			content: [
 				{
 					type: "text",
-					text: "[lib/code-outline.ts#1234]\n241: export function renderOutline(outline: Outline, label: string): string[] {\n245: \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n"
+					text: "[lib/code-outline.ts#1234]\n251: export function renderOutline(outline: Outline, label: string): string[] {\n255: \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n"
 				}
 			],
 			details: {
 				cwd: process.cwd(),
 				scopePath: "lib/code-outline.ts",
-				displayContent: "   241│ export function renderOutline(outline: Outline, label: string): string[] {\n * 245│ \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n",
+				displayContent: "   251│ export function renderOutline(outline: Outline, label: string): string[] {\n * 255│ \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n",
 				matchCount: 2,
 				fileCount: 1,
 				files: ["lib/code-outline.ts"]
@@ -128,7 +127,7 @@ describe("card verify harness for TOON output", async () => {
 		const plain = renderedAnsi.replace(/\u001b\[[0-9;]*m/g, "");
 		// Check that the enclosing function declaration is rendered above or alongside matches
 		expect(plain).toContain("renderOutline");
-		expect(plain).toContain("245");
+		expect(plain).toContain("255");
 	});
 	test("multi-file grep with markdown headers and context rows filters context and enriches with AST", () => {
 		const grepRenderer = toolRenderers.grep;
@@ -141,9 +140,9 @@ describe("card verify harness for TOON output", async () => {
 					type: "text",
 					text: `# lib/
 ## code-outline.ts#52B3
- 240:export function renderOutline(outline: Outline, label: string): string[] {
-*245:\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
- 246:\t\t...flat.map(outlineRow),
+ 251:export function renderOutline(outline: Outline, label: string): string[] {
+*255:\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
+ 256:\t\t...flat.map(outlineRow),
 `
 				}
 			],
@@ -152,10 +151,10 @@ describe("card verify harness for TOON output", async () => {
 				searchPath: process.cwd(),
 				displayContent: `# lib/
 ## code-outline.ts#52B3
- 240│export function renderOutline(outline: Outline, label: string): string[] {
-*245│\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
+ 251│export function renderOutline(outline: Outline, label: string): string[] {
+*255│\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
     │...
- 246│\t\t...flat.map(outlineRow),
+ 256│\t\t...flat.map(outlineRow),
 `,
 				matchCount: 1,
 				fileCount: 1,
@@ -176,9 +175,9 @@ describe("card verify harness for TOON output", async () => {
 		// 1 match only, context line 240 and 246 omitted from matches, enclosing signature present
 		expect(plain).toContain("1 match");
 		expect(plain).toContain("renderOutline");
-		expect(plain).toContain("245");
-		expect(plain).not.toContain("240:");
-		expect(plain).not.toContain("246:");
+		expect(plain).toContain("255");
+		expect(plain).not.toContain("251:");
+		expect(plain).not.toContain("256:");
 	});
 	test("read toolRenderer renders markdown TOC outline with syntax highlighting", () => {
 		const readRenderer = toolRenderers.read;
@@ -323,6 +322,41 @@ describe("card verify harness for TOON output", async () => {
 		const native = renderer.describeResult!(result, { expanded: false, isPartial: false }, args)!;
 		expect(plain(nativeText(native.body![0]))).toContain("output-row-5 [...]");
 		expect(JSON.stringify(native)).toContain("omp.run.foot");
+	});
+
+	test("eval display with textOutput and large code compacts both code and TOON without duplicate raw JSON", () => {
+		const renderer = toolRenderers.eval;
+		const code = Array.from({ length: 15 }, (_, i) => `const step${i} = ${i};`).join("\n");
+		const jsonVal = {
+			status: "ok",
+			records: Array.from({ length: 10 }, (_, i) => ({ id: i + 1, label: `item-${i + 1}` })),
+		};
+		const rawDisplay = "display[1]:\n" + JSON.stringify(jsonVal, null, 2);
+		const result = {
+			content: [{ type: "text", text: `logged line\n\n${rawDisplay}\n\n[Showing lines 1-20 of 100. Read artifact://7 for full output]` }],
+			details: {
+				language: "js",
+				cells: [{
+					index: 0,
+					code,
+					language: "js",
+					output: `logged line\n\n${rawDisplay}`,
+					textOutput: "logged line",
+					status: "complete",
+					exitCode: 0,
+					durationMs: 15,
+				}],
+				jsonOutputs: [jsonVal],
+			},
+			isError: false,
+		};
+		const args = { language: "js", code };
+		const foldedAnsi = plain(renderer.renderResult(result, { expanded: false, isPartial: false }, themeModule.theme, args)!.render(100).join("\n"));
+		expect(foldedAnsi).toContain("const step0 = 0;");
+		expect(foldedAnsi).not.toContain("const step10 = 10;");
+		expect(foldedAnsi).toContain("status: ok");
+		expect(foldedAnsi).not.toContain("display[1]:");
+		expect(foldedAnsi).not.toContain("Read artifact://7");
 	});
 
 });

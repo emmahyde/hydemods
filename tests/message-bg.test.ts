@@ -42,7 +42,7 @@ function fakes() {
 		bg: (color, text) => `[${color}]${text}`,
 		bgFill: (color, text) => `[fill ${color}]${text}`,
 	};
-	const assistant = { render: () => ["hi"], renderTranscriptStableRows: () => ["hi"] };
+	const assistant = { render: (_width: number) => ["hi"], renderTranscriptStableRows: (_count: number, _width: number) => ["hi"] };
 	return { theme, assistant };
 }
 

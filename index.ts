@@ -30,7 +30,7 @@ import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-gene
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
+import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText, separateGeneratedNoticeFooter, stripGeneratedNoticeFooter } from "./lib/tool-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
@@ -56,7 +56,7 @@ import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 
@@ -124,7 +124,7 @@ const TWEAK_DEFS: TweakDef[] = [
 	{
 		name: "latest-thought-panel",
 		title: "Latest thought panel",
-		description: "Keeps thinking out of the transcript and shows only the newest thought block above the editor.",
+		description: "Keeps thinking out of the transcript and shows only the newest thought block below the editor.",
 		category: "Interface",
 		render: () => "Turns on OMP's Hide Thinking Blocks for the session (not saved) and tails the newest thought, last 8 lines, while it streams.",
 	},
@@ -382,7 +382,7 @@ function extractToolPayload(event: { toolName: string; result: unknown }): unkno
 			}
 		}
 
-		const displayMatch = /^display\[\d+\]:\s*\n([\s\S]*)$/.exec(rawText.trim());
+		const displayMatch = /^display\[\d+\]:\s*\n([\s\S]*)$/.exec(stripGeneratedNoticeFooter(rawText).trim());
 		if (displayMatch) {
 			const body = displayMatch[1].trim();
 			try {
@@ -409,7 +409,7 @@ function extractToolPayload(event: { toolName: string; result: unknown }): unkno
 			if (grepParsed) return grepParsed;
 		}
 
-		const trimmedRaw = rawText.trim();
+		const trimmedRaw = stripGeneratedNoticeFooter(rawText).trim();
 		if (trimmedRaw.startsWith("{") || trimmedRaw.startsWith("[")) {
 			try {
 				return JSON.parse(trimmedRaw);
@@ -526,7 +526,8 @@ function toolResultText(content: unknown): string | undefined {
 // the model. Undefined when the text is not one JSON document or when TOON would not be a plain
 // body (command results, artifact previews, excerpts), so those results reach the model verbatim.
 function toonForModel(text: string): string | undefined {
-	const trimmed = text.trim();
+	const { body, footer } = separateGeneratedNoticeFooter(text);
+	const trimmed = body.trim();
 	let jsonText: string;
 	const displayMatch = /^(?:display\[\d+\]:\s*)?([\[{][\s\S]*)$/.exec(trimmed);
 	if (displayMatch) {
@@ -544,7 +545,8 @@ function toonForModel(text: string): string | undefined {
 	if (decoded === null || typeof decoded !== "object") return undefined;
 	try {
 		const output = formatJsonOutput(decoded);
-		return output.format === "toon" ? output.text : undefined;
+		if (output.format !== "toon") return undefined;
+		return footer ? `${output.text}\n${footer.trimStart()}` : output.text;
 	} catch {
 		return undefined;
 	}
@@ -554,7 +556,7 @@ function toonForModel(text: string): string | undefined {
 // device behind a write) has no bespoke renderer and the text is one JSON document.
 function nativeRendersJsonTree(toolName: string, args: unknown, text: string | undefined): boolean {
 	if (text === undefined) return false;
-	const trimmed = text.trimEnd();
+	const trimmed = stripGeneratedNoticeFooter(text).trimEnd();
 	if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
 	try { JSON.parse(trimmed); } catch { return false; }
 	let rendererName = toolName;
@@ -697,7 +699,9 @@ function structureToolResult(details: ToolCardDetails | undefined): StructuredTe
 // File excerpts show `[name#:range]` instead of the snapshot header; the code under it loses its
 // line numbers and comments. The host's display text wins over the model-facing text.
 function commentFreeText(structured: StructuredText, displayText?: string): string {
-	if (structured.format !== "file" || !/^\[[^\]#\r\n]+#[\da-f]+\]\r?\n/i.test(structured.text)) return structured.text;
+	if (structured.format !== "file" || !/^\[[^\]#\r\n]+#[\da-f]+\]\r?\n/i.test(structured.text)) {
+		return stripGeneratedNoticeFooter(structured.text);
+	}
 	const shown = presentReadExcerpt({ text: structured.text, displayContent: displayText === undefined ? undefined : { text: displayText }, filenameShown: false });
 	return shown.header ? `${shown.header}\n${shown.body}` : shown.body;
 }
@@ -1271,7 +1275,7 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 	// The row above already names the file, so only the code body is shown.
 	const text = isExcerpt
 		? presentReadExcerpt({ text: modelText ?? "", displayContent: displayText === undefined ? undefined : { text: displayText }, path: split.path, selector: split.sel || undefined, filenameShown: true }).body.trim()
-		: modelText?.trim();
+		: stripGeneratedNoticeFooter(modelText ?? "").trim();
 	return { header: /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? uiTheme.fg("accent", header) : uiTheme.fg("accent", underlineLabel(header)), prose: text ? text.split(/\r?\n/) : undefined };
 }
 
@@ -1385,7 +1389,7 @@ function todoOneLine(details: unknown, theme: Theme): string | undefined {
 function bashSourceStructured(args: unknown, text: string, ast: boolean): StructuredText | undefined {
 	const command = (args as { command?: unknown } | undefined)?.command;
 	const path = typeof command === "string" ? commandSourcePath(command) : undefined;
-	const cleaned = sanitizeTerminalText(text).replace(/\r\n/g, "\n").replace(/\n+Wall time: [^\n]*\s*$/, "");
+	const cleaned = stripGeneratedNoticeFooter(sanitizeTerminalText(text).replace(/\r\n/g, "\n")).replace(/\n+Wall time: [^\n]*\s*$/, "");
 	const numbering = typeof command === "string" && printsLineNumbers(command);
 	// Rows that all begin `path:line:` (grep -rn, or any tool printing that shape) group under one header per file.
 	const grouped = groupGrepPrefixes(cleaned);
@@ -1462,8 +1466,9 @@ function evalStructuredValue(value: unknown): StructuredText {
 }
 
 function formatEvalPrintedOutput(text: string, theme: Theme): string {
-	if (cappedRenderPayload(text) === undefined) return text;
-	return decodeEvalOutput(text).map(part => {
+	const cleaned = stripGeneratedNoticeFooter(text);
+	if (cappedRenderPayload(cleaned) === undefined) return cleaned;
+	return decodeEvalOutput(cleaned).map(part => {
 		try {
 			const structured = evalStructuredValue("value" in part ? part.value : part.raw);
 			return structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
@@ -1477,19 +1482,27 @@ function formatEvalPrintedOutput(text: string, theme: Theme): string {
 type EvalViewArgs = { code?: string; language?: string; title?: string; cells?: EvalViewArgs[] };
 type EvalViewResult = { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean };
 
-function evalViewArgs(args: unknown, takeover: CardTakeover): unknown {
+function evalViewArgs(args: unknown, takeover: CardTakeover, expanded = false): unknown {
 	if (!args || typeof args !== "object") return args;
 	const input = args as EvalViewArgs;
-	const summarize = (cell: EvalViewArgs) => ({ ...cell,
-		title: typeof cell.code === "string" ? takeover.summary?.(cell.language ?? "python", cell.code) ?? cell.title : cell.title,
-	});
+	const limit = Math.min(takeover.display.collapsedLines, previewWindowRows());
+	const summarize = (cell: EvalViewArgs) => {
+		const code = typeof cell.code === "string" && !expanded && cappedRenderPayload(cell.code) !== undefined
+			? collapseTextLines(cell.code.split(/\r?\n/), limit, false, { marker: "[...]" }).join("\n")
+			: cell.code;
+		return {
+			...cell,
+			...(code !== undefined ? { code } : {}),
+			title: typeof cell.code === "string" ? takeover.summary?.(cell.language ?? "python", cell.code) ?? cell.title : cell.title,
+		};
+	};
 	return input.cells ? { ...input, cells: input.cells.map(summarize) } : summarize(input);
 }
 
 // Freeze settled outlines against their returned snapshot, not later disk contents.
 const evalViewOutputs = new WeakMap<object, { cells?: string[]; output?: string; json?: string }>();
 function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, takeover: CardTakeover): EvalViewResult {
-	const details = (result.details ?? {}) as { cells?: Array<EvalViewArgs & { output: string; hasMarkdown?: boolean; status?: string }>; jsonOutputs?: unknown[] };
+	const details = (result.details ?? {}) as { cells?: Array<EvalViewArgs & { output: string; textOutput?: string; hasMarkdown?: boolean; status?: string }>; jsonOutputs?: unknown[] };
 	if (details.jsonOutputs?.some(value => cappedRenderPayload(value) === undefined)) return result;
 	let formatted = partial ? undefined : evalViewOutputs.get(result);
 	if (!partial && !formatted) {
@@ -1502,7 +1515,10 @@ function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, 
 			}
 		}).join("\n\n");
 		formatted = {
-			cells: details.cells?.map(cell => cell.hasMarkdown ? cell.output : formatEvalPrintedOutput(cell.output, theme)),
+			cells: details.cells?.map(cell => {
+				const sourceOutput = details.jsonOutputs?.length && cell.textOutput !== undefined ? cell.textOutput : cell.output;
+				return cell.hasMarkdown ? sourceOutput : formatEvalPrintedOutput(sourceOutput, theme);
+			}),
 			output: details.cells?.length ? undefined : formatEvalPrintedOutput(toolResultText(result.content) ?? "", theme),
 			json,
 		};
@@ -1511,8 +1527,11 @@ function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, 
 	const cells = details.cells?.map((cell, index) => {
 		const summary = takeover.summary?.(cell.language ?? "python", cell.code ?? "");
 		const extra = index === details.cells!.length - 1 ? formatted?.json : undefined;
+		const baseOutput = formatted?.cells?.[index] ?? (details.jsonOutputs?.length && cell.textOutput !== undefined ? cell.textOutput : cell.output);
+		const combinedOutput = [baseOutput, extra].filter(Boolean).join("\n\n");
 		return { ...cell, title: summary ?? cell.title,
-			output: [formatted?.cells?.[index] ?? cell.output, extra].filter(Boolean).join("\n\n"),
+			output: combinedOutput,
+			...(cell.textOutput !== undefined ? { textOutput: combinedOutput } : {}),
 		};
 	});
 	const output = formatted && !cells?.length ? [formatted.output, formatted.json].filter(Boolean).join("\n\n") : undefined;
@@ -1547,7 +1566,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		}
 	}
 	const astOn = isTweakEnabled("ast-structuring");
-	const outline = !astOn ? undefined : toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : undefined;
+	const outline = !astOn ? undefined : toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : toolName === "grep" ? grepOutlineStructured(result) : undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
 		const details: ToolCardDetails = { toolName, result: outline.text, isError: false, cwd: process.cwd() };
@@ -1597,7 +1616,8 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 		const wrapped: ToolRenderer = {
 			...original,
 			renderCall(args, options, theme) {
-				return original.renderCall(name === "eval" && takeover.active() ? evalViewArgs(args, takeover) : args, options, theme);
+				const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+				return original.renderCall(name === "eval" && takeover.active() ? evalViewArgs(args, takeover, expanded) : args, options, theme);
 			},
 			renderResult(result, options, theme, args) {
 				if (name === "eval") {
@@ -1608,10 +1628,10 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 					} };
 					const active = takeover.active();
 					const formatted = active ? evalViewResult(result, options.isPartial, theme, takeover) : result;
-					const callArgs = active ? evalViewArgs(args, takeover) : args;
+					const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+					const callArgs = active ? evalViewArgs(args, takeover, expanded) : args;
 					const base = original.renderResult(formatted, nativeOptions, theme, callArgs);
 					if (!active || !base) return base;
-					const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
 					let cachedWidth = -1;
 					let cachedLimit = -1;
 					let component = base;
@@ -1636,18 +1656,22 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
 			},
 		};
-		if (original.describeCall) wrapped.describeCall = (args, options) =>
-			original.describeCall!(name === "eval" && takeover.active() ? evalViewArgs(args, takeover) : args, options);
+		if (original.describeCall) wrapped.describeCall = (args, options) => {
+			const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+			return original.describeCall!(name === "eval" && takeover.active() ? evalViewArgs(args, takeover, expanded) : args, options);
+		};
 		if (original.describeResult) {
 			wrapped.describeResult = (result, options, args) => {
 				if (name === "eval") {
 					const active = takeover.active();
 					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
+					const expanded = context?.expanded ?? options.expanded;
 					const formatted = active ? evalViewResult(result, options.isPartial, uiTheme, takeover) : result;
+					const limit = Math.min(takeover.display.collapsedLines, previewWindowRows());
 					return original.describeResult!(
-						active ? compactEvalResult(formatted, { expanded: context?.expanded ?? options.expanded, limit: takeover.display.collapsedLines, theme: uiTheme, output: context?.output }) : result,
+						active ? compactEvalResult(formatted, { expanded, limit, theme: uiTheme, output: context?.output }) : result,
 						{ ...options, renderContext: { ...context, ...(active ? { output: undefined } : {}), previewLines: takeover.display.collapsedLines } },
-						active ? evalViewArgs(args, takeover) : args,
+						active ? evalViewArgs(args, takeover, expanded) : args,
 					);
 				}
 				if (takeover.active() && !options.isPartial) {
@@ -1708,7 +1732,7 @@ const COLLAPSED_LINE_PRESETS = [1, 3, 4, 5, 10];
 const COLLAPSED_LINES_ROW = Symbol("collapsed-lines");
 
 function panelComponent(theme: ThemeLike, done: (result: undefined) => void, display: ToolDisplayState, onToggle?: () => void) {
-	const groups = Object.fromEntries(CATEGORIES.map((category) => [category, TWEAKS.filter((tweak) => tweak.category === category)])) as Record<TweakCategory, readonly Tweak[]>;
+	const groups = Object.fromEntries(CATEGORIES.map((category) => [category, TWEAKS.filter((tweak) => tweak.category === category)])) as unknown as Record<TweakCategory, readonly Tweak[]>;
 	type PanelRow = Tweak | typeof COLLAPSED_LINES_ROW | (typeof BG_ROWS)[number];
 	const selectable = CATEGORIES.flatMap<PanelRow>((category) => category === "Interface" ? [...groups[category], COLLAPSED_LINES_ROW] : category === "Colors" ? [...BG_ROWS] : groups[category]);
 	const body = new Box(2, 1);
@@ -2120,7 +2144,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 					},
 				};
 			},
-			{ placement: "aboveEditor" },
+			{ placement: "belowEditor" },
 		);
 	};
 

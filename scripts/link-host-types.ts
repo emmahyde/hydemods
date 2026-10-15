@@ -40,7 +40,14 @@ const executable = Bun.which("omp");
 if (!executable) throw new Error("Typecheck needs `omp` on PATH; it supplies the @oh-my-pi/* types.");
 const hostDirectory = dirname(realpathSync(executable));
 
-link("@oh-my-pi", dirname(packageRoot("@oh-my-pi/pi-coding-agent", hostDirectory)));
+const localMonorepo = join(process.env.HOME || "", "src", "oh-my-pi");
+const localOhMyPi = join(localMonorepo, "node_modules", "@oh-my-pi");
+const hostOhMyPi = existsSync(localOhMyPi)
+	? localOhMyPi
+	: dirname(packageRoot("@oh-my-pi/pi-coding-agent", hostDirectory));
+link("@oh-my-pi", hostOhMyPi);
 link("@toon-format/toon", packageRoot("@toon-format/toon", root));
 link("yaml", packageRoot("yaml", root));
 link("@types/bun", bunTypesRoot());
+const localAssetsTypes = join(localMonorepo, "types", "assets");
+if (existsSync(localAssetsTypes)) link("@types/assets", localAssetsTypes);

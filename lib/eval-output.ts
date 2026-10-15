@@ -3,7 +3,7 @@ import { MAX_RENDER_BYTES } from "./tool-output";
 const MAX_DEPTH = 64;
 const MAX_WORK = MAX_RENDER_BYTES * 8;
 const INVALID_LITERAL = Symbol("invalid inspected literal");
-const KEYWORD_VALUES = [["true", true], ["false", false], ["null", null]] as const;
+const KEYWORD_VALUES = [["true", true], ["false", false], ["null", null], ["True", true], ["False", false], ["None", null]] as const;
 const STRING_ESCAPES: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0" };
 
 type EvalOutput = { raw: string; value?: unknown };
@@ -181,7 +181,7 @@ export function decodeEvalOutput(text: string): EvalOutput[] {
 			const lineEnd = text.indexOf("\n", start);
 			const line = text.slice(start, lineEnd < 0 ? text.length : lineEnd);
 			if (/^\[[^\]\[\r\n"'`{},]+#[\da-f]+\][ \t]*\r?$/i.test(line) ||
-				/^\[Showing lines \d+(?:-\d+)? of \d+[^\]\r\n]*\][ \t]*\r?$/.test(line)) {
+				/^\[(?:Showing (?:lines \d+(?:-\d+)?|\d+|line \d+|head and tail bytes) of [\d,]+|\d+ (?:matches|results) limit reached|Some lines truncated to \d+|Full output was not saved|raw output: artifact:\/\/\d+|Source: artifact:\/\/\d+)[^\]\r\n]*\][ \t]*\r?$/.test(line)) {
 				if (lineEnd < 0) break;
 				lineStart = lineEnd + 1;
 				continue;

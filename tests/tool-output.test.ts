@@ -11,6 +11,8 @@ import {
 	parseYamlDocument,
 	parseTabularData,
 	sanitizeTerminalText,
+	separateGeneratedNoticeFooter,
+	stripGeneratedNoticeFooter,
 } from "../lib/tool-output";
 import { underlineLabel, underlinePathTokens } from "../lib/path-styling";
 
@@ -98,6 +100,13 @@ test("nested JSON decode unpacks fenced markdown json code blocks", () => {
 	const fenced = "```json\n{\n  \"status\": \"ok\",\n  \"data\": [1, 2, 3]\n}\n```";
 	const decoded = decodeNestedJson(fenced);
 	expect(decoded).toEqual({ status: "ok", data: [1, 2, 3] });
+});
+test("separateGeneratedNoticeFooter isolates artifact and truncation notices", () => {
+	const raw = '{"ok": true}\n\n[Showing lines 1-10 of 100. Read artifact://42 for full output]';
+	const { body, footer } = separateGeneratedNoticeFooter(raw);
+	expect(body).toBe('{"ok": true}');
+	expect(footer).toBe('\n\n[Showing lines 1-10 of 100. Read artifact://42 for full output]');
+	expect(stripGeneratedNoticeFooter(raw)).toBe('{"ok": true}');
 });
 test("parseTabularData parses CSV, TSV, and whitespace-aligned command tables into TOON-ready rows", () => {
 	const csv = "id,name,role\n007,alice,admin\n1.10,bob,user";

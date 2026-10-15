@@ -99,13 +99,31 @@ function parseJsonDocuments(text: string): unknown {
 	}
 }
 
+const GENERATED_NOTICE_FOOTER = /(?:\r?\n)+\[(?:Showing (?:lines \d+(?:-\d+)?|\d+|line \d+|head and tail bytes) of [\d,]+|\d+ (?:matches|results) limit reached|Some lines truncated to \d+|Full output was not saved|raw output: artifact:\/\/\d+|Source: artifact:\/\/\d+)[^\]\r\n]*\]\s*$/;
+
+export function separateGeneratedNoticeFooter(text: string): { body: string; footer: string } {
+	let current = text;
+	let footers = "";
+	while (true) {
+		const match = GENERATED_NOTICE_FOOTER.exec(current);
+		if (!match) break;
+		footers = match[0] + footers;
+		current = current.slice(0, match.index);
+	}
+	return { body: current, footer: footers };
+}
+
+export function stripGeneratedNoticeFooter(text: string): string {
+	return separateGeneratedNoticeFooter(text).body;
+}
+
 export function decodeNestedJson(value: unknown, depth = 0): unknown {
 	if (depth >= MAX_NESTED_JSON_DEPTH) return value;
 	if (isTruncatedPreview(value) || artifactPreview(value) || isCommandResult(value)) return value;
 	if (typeof value === "string") {
 		// A huge string is never a readable document, and re-parsing it can only misstate it.
 		if (value.length > MAX_NESTED_JSON_STRING) return value;
-		let text = value.trim().replace(/^display\[\d+\]:\s*/, "");
+		let text = stripGeneratedNoticeFooter(value.trim()).replace(/^display\[\d+\]:\s*/, "");
 		const fencedMatch = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(text);
 		if (fencedMatch && /^[\[{]/.test(fencedMatch[1].trim())) {
 			text = fencedMatch[1].trim();
@@ -533,7 +551,7 @@ export function formatFileExcerpt(text: string, useToon = true): string {
 	const clean = stripSourceLineNumbers(sanitizeTerminalText(text));
 	const headerEnd = clean.indexOf("\n");
 	if (headerEnd < 0) return clean;
-	const body = clean.slice(headerEnd + 1).trim();
+	const body = stripGeneratedNoticeFooter(clean.slice(headerEnd + 1)).trim();
 	if (body.startsWith("{") || body.startsWith("[")) {
 		try {
 			const value = decodeNestedJson(JSON.parse(body));

@@ -78,3 +78,23 @@ test("source-range folds attach both gaps to content rather than standalone rows
 	expect(shown.some(line => line.includes("execute();") && line.includes("⋯1"))).toBe(true);
 });
 
+test("compacts cell code, textOutput, and strips trailing generated artifact footers", () => {
+	const codeLines = Array.from({ length: 12 }, (_, i) => `const x${i} = ${i};`).join("\n");
+	const outWithFooter = [...rows.slice(0, 4), "", "[Showing lines 1-4 of 200 (20.0KB limit). Read artifact://42 for full output]"].join("\n");
+	const result = {
+		content: [{ type: "text", text: outWithFooter }],
+		details: {
+			cells: [{ code: codeLines, output: outWithFooter, textOutput: outWithFooter, status: "complete" }],
+		},
+	};
+	const compact = compactEvalResult(result, { expanded: false, limit: 4, theme });
+	expect(plain(compact.details.cells[0].code!).split("\n")).toEqual([
+		"const x0 = 0;",
+		"const x1 = 1;",
+		"const x2 = 2;",
+		"const x3 = 3; [...]",
+	]);
+	expect(plain(compact.details.cells[0].output).split("\n")).toEqual(["row 1", "row 2", "row 3", "row 4"]);
+	expect(plain(compact.details.cells[0].textOutput!).split("\n")).toEqual(["row 1", "row 2", "row 3", "row 4"]);
+});
+

@@ -467,7 +467,7 @@ export function renderRange(outline: Outline, lines: string[], start: number, en
 	for (const declaration of chain) rows.push(signatureRow(declaration));
 	const indent = "  ".repeat(innermost.depth + 2);
 	const hiddenBefore = start - innermost.bodyStart;
-	if (hiddenBefore > 0) rows.push(`${indent}⋯${hiddenBefore}`);
+	if (hiddenBefore > 0) rows[rows.length - 1] += `  ⋯${hiddenBefore}`;
 	const excerpt = lines.slice(start - 1, end).filter((line, offset) => !dropped[start - 1 + offset] && line.trim() !== "");
 	const common = commonIndent(excerpt);
 	excerpt.forEach(line => rows.push(`${indent}${line.slice(common).replace(/^\t+/, tabs => "  ".repeat(tabs.length))}`));

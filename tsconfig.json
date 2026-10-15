@@ -7,8 +7,9 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["bun"],
-    "lib": ["esnext", "dom"]
+    "allowArbitraryExtensions": true,
+    "types": ["bun", "assets"],
+    "lib": ["esnext", "dom.asynciterable"]
   },
   "include": ["index.ts", "lib/**/*.ts", "tests/**/*.ts"]
 }
