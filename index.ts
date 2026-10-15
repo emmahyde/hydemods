@@ -643,7 +643,8 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 }
 
 // Tool-card styling. Truecolor lime label (#84cc16); the host card owns the background.
-const TOOL_NAME_ANSI = "\x1b[1;38;2;132;204;22m";
+const TOOL_NAME_ANSI = "\x1b[1;38;2;224;82;138m";
+const PROMPT_ANSI = "\x1b[1;38;2;74;222;128m";
 const ANSI_RESET = "\x1b[0m";
 
 // Pad one card line to the requested width without changing its background.
@@ -694,10 +695,10 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 		.map((line) => line.replace(/\t/g, "  ").trimEnd())
 		.filter((line) => structured.format === "command" || line.length > 0);
 
-	const prefixSymbol = error ? "✖" : "▶";
-	const label = `${theme.fg(error ? "error" : "accent", prefixSymbol)} ${TOOL_NAME_ANSI}${toolName}${ANSI_RESET}`;
+	const prefixSymbol = error ? "✖" : "$>";
+	const label = `${error ? theme.fg("error", prefixSymbol) : `${PROMPT_ANSI}${prefixSymbol}${ANSI_RESET}`} ${TOOL_NAME_ANSI}${toolName}${ANSI_RESET}`;
 	const coloredPrefix = `${label} `;
-	// Continuation lines hang under the first content column (visible width of "▶ name ").
+	// Continuation lines hang under the first content column (visible width of "$> name ").
 	const hangingIndent = " ".repeat(`${prefixSymbol} ${toolName} `.length);
 
 	const markdown = structured.format === "markdown"
