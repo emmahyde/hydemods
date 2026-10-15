@@ -17,6 +17,9 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
 import { readSourceFsPath, renderFallbackToolCard, renderTaskToolCard, splitPathAndSel } from "./lib/host-copies";
+import { green } from "./lib/colors";
+import { testSummaryLine } from "./lib/test-summary";
+import { commandSourcePath, printsLineNumbers, extensionOf, scanComments, stripComments, stripLineNumbers } from "./lib/source-text";
 import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
@@ -100,6 +103,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Uses the tiny model to describe each Eval command without delaying execution.",
 		category: "Interface",
 		render: () => "Shows a short intent summary when ready. Uses @tiny or @smol, never the primary model; falls back to the original title on failure.",
+	},
+	{
+		name: "ast-structuring",
+		title: "AST structuring",
+		description: "Shows file reads, writes, edits and source printed by bash as declaration outlines instead of raw text.",
+		category: "Interface",
+		render: () => "Declarations are parsed with tree-sitter; bodies fold to a line count. Comments and line-number gutters are always stripped from displayed source. Off shows the plain excerpt; the model sees the same output either way.",
 	},
 	{
 		name: "last-prompt-drawer",
@@ -643,8 +653,8 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 }
 
 // Tool-card styling. Truecolor lime label (#84cc16); the host card owns the background.
-const TOOL_NAME_ANSI = "\x1b[1;38;2;224;82;138m";
-const PROMPT_ANSI = "\x1b[1;38;2;74;222;128m";
+const TOOL_NAME_ANSI = "\x1b[1;38;2;156;219;117m";
+const PROMPT_ANSI = "\x1b[1;38;2;156;219;117m";
 const ANSI_RESET = "\x1b[0m";
 
 // Pad one card line to the requested width without changing its background.
@@ -685,11 +695,20 @@ function structureToolResult(details: ToolCardDetails | undefined): StructuredTe
 	return structured;
 }
 
+// File excerpts keep their `[name#tag]` header; the code under it loses its comments.
+function commentFreeText(structured: StructuredText): string {
+	if (structured.format !== "file") return structured.text;
+	const header = /^\[([^\]#\r\n]+)#[\da-f]+\]\r?\n/.exec(structured.text);
+	const ext = header ? extensionOf(header[1]) : undefined;
+	if (!header || ext === undefined) return structured.text;
+	return header[0] + stripComments(structured.text.slice(header[0].length), ext);
+}
+
 function toolMessageRenderer(message: ToolMessage, options: RendererOptions, theme: Theme, display: ToolDisplayState, structured: StructuredText = structureToolResult(message.details)) {
 	const details = message.details;
 	const toolName = details?.toolName || "tool";
 	const error = details?.isError;
-	const pretty = structured.text.trim() || "(empty)";
+	const pretty = commentFreeText(structured).trim() || "(empty)";
 	const rawLines = pretty
 		.split(/\r?\n/)
 		.map((line) => line.replace(/\t/g, "  ").trimEnd())
@@ -697,9 +716,13 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 
 	const prefixSymbol = error ? "✖" : "$>";
 	const label = `${error ? theme.fg("error", prefixSymbol) : `${PROMPT_ANSI}${prefixSymbol}${ANSI_RESET}`} ${TOOL_NAME_ANSI}${toolName}${ANSI_RESET}`;
-	const coloredPrefix = `${label} `;
+	// A quote-style rule between the tool name and its output; continuation rows carry it too.
+	const rule = green("│");
+	const trailingRule = green("┆");
+	const coloredPrefix = `${label} ${rule} `;
 	// Continuation lines hang under the first content column (visible width of "$> name ").
-	const hangingIndent = " ".repeat(`${prefixSymbol} ${toolName} `.length);
+	const indent = " ".repeat(`${prefixSymbol} ${toolName} `.length);
+	const hangingIndent = `${indent}${rule} `;
 
 	const markdown = structured.format === "markdown"
 		? new Markdown(pretty.replace(/^(\[[^\]\r\n]+#[\da-f]+\]|\[(?:Source:|Showing lines|truncated;)[^\r\n]*\])$/gim, line => theme.fg("dim", line)), 0, 0, getMarkdownTheme(), { color: text => theme.fg("text", text) })
@@ -740,8 +763,12 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 				const kept = collapseTextLines(messages, 3, false, { marker: () => theme.fg("muted", "[...]") });
 				selected = [...selected, renderedContent[diagnosticsAt], ...kept];
 			}
-			return selected.map((line, index) =>
-				padToolBlockLine(fitCollapseLine(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
+			// The rule trails off into a dashed stroke on the last row of a multi-row card.
+			return selected.map((line, index) => {
+				const trails = selected.length > 1 && index === selected.length - 1;
+				const prefix = index === 0 ? coloredPrefix : hangingIndent;
+				return padToolBlockLine(truncateToWidth(`${trails ? prefix.replace(rule, trailingRule) : prefix}${line}`, width), width);
+			});
 		},
 		invalidate() { markdown?.invalidate(); },
 	};
@@ -766,7 +793,8 @@ function memoOutline(key: string, code: string, path: string | undefined): Outli
 	if (outlineMemo.has(key)) return outlineMemo.get(key);
 	let outline: Outline | undefined;
 	try {
-		outline = outlineSource(code, { path }, summarizeCode);
+		// Comments never appear on a card, so signatures are read from the comment-free text; lines stay put.
+		outline = outlineSource(path ? scanComments(code, extensionOf(path)).lines.join("\n") : code, { path }, summarizeCode);
 	} catch {
 		outline = undefined;
 	}
@@ -1023,7 +1051,8 @@ function computeReadOutline(result: { content: unknown; details?: unknown }, arg
 	const endLine = numbers[last[last.length - 1]]! + offsets[offsets.length - 1]!;
 	const outline = memoOutline(`disk:${fsPath}:${stamp}`, disk, fsPath);
 	if (!outline) return undefined;
-	const rows = renderRange(outline, diskLines, rangeStart, endLine, label);
+	const scan = scanComments(disk, extensionOf(fsPath));
+	const rows = renderRange(outline, scan.lines, rangeStart, endLine, label, scan.dropped);
 	return rows ? { text: rows.join("\n"), format: "outline", lang: outline.language, path: fsPath } : undefined;
 }
 
@@ -1309,6 +1338,40 @@ function carriesDiagnostics(details: unknown): boolean {
 	return Array.isArray(record.perFileResults) && record.perFileResults.some(carriesDiagnostics);
 }
 
+// A todo update is one row: the task that just finished (green, checked), else the one just
+// started, else the overall count. The native card's phase-by-phase listing waits for Ctrl+O.
+function todoOneLine(details: unknown, theme: Theme): string | undefined {
+	const todo = details as { phases?: { tasks: { content: string; status: string }[] }[]; completedTasks?: { content: string }[] } | undefined;
+	if (!todo || !Array.isArray(todo.phases)) return undefined;
+	const done = todo.completedTasks ?? [];
+	if (done.length > 0) return `${green(`☑ ${done[0].content}`)}${done.length > 1 ? theme.fg("muted", ` +${done.length - 1}`) : ""}`;
+	const tasks = todo.phases.flatMap(phase => phase.tasks);
+	const active = tasks.find(task => task.status === "in_progress");
+	if (active) return theme.fg("accent", `☐ ${active.content}`);
+	const finished = tasks.filter(task => task.status === "completed").length;
+	return theme.fg("muted", `${finished}/${tasks.length} done`);
+}
+
+// Source a shell command printed (`sed -n`, `cat`, `grep -n`) gets the treatment a read gets: the
+// line-number gutter is dropped, comments go, and where the command names the file, the text
+// folds into its declaration outline. Output that is not numbered and names no file stays plain.
+function bashSourceStructured(args: unknown, text: string, ast: boolean): StructuredText | undefined {
+	const command = (args as { command?: unknown } | undefined)?.command;
+	const path = typeof command === "string" ? commandSourcePath(command) : undefined;
+	const stripped = stripLineNumbers(sanitizeTerminalText(text).replace(/\r\n/g, "\n").replace(/\n+Wall time: [^\n]*\s*$/, ""), typeof command === "string" && printsLineNumbers(command) ? 1 : undefined);
+	if (!path && !stripped.numbered) return undefined;
+	const ext = path ? extensionOf(path) : undefined;
+	const code = stripComments(stripped.text, ext).replace(/^\n+|\s+$/g, "");
+	if (!code) return undefined;
+	if (path && ast) {
+		const outline = memoOutline(`bash:${path}:${Bun.hash(code)}`, code, path);
+		if (outline && outline.declarations.length > 0) {
+			return { text: renderOutline(outline, displayPath(path)).join("\n"), format: "outline", lang: outline.language, path };
+		}
+	}
+	return { text: code, format: "code", lang: ext };
+}
+
 // The hydemods view of one settled result, or undefined when the native renderer should draw it:
 // takeover off, still streaming, plain text hydemods cannot improve, a JSON document OMP already
 // shows as a tree, or a payload past the size cap. Failures get the same card in error colour
@@ -1436,15 +1499,15 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const reason = message.split(/\n|(?<=\.)\s/)[0] ?? "edit rejected";
 		return new Text(`${theme.fg("error", "✖ edit rejected:")} ${theme.fg("muted", reason)} ${theme.fg("dim", "(Ctrl+O)")}`, 0, 0);
 	}
-	const outline = toolName === "read"
-		? readOutlineStructured(result, args)
-		: toolName === "edit"
-		? editOutlineStructured(result)
-		: toolName === "write"
-		? writeOutlineStructured(result, args)
-		: toolName === "grep"
-		? grepOutlineStructured(result)
-		: undefined;
+	if (toolName === "todo" && !result.isError && !options.expanded) {
+		const line = todoOneLine(result.details, theme);
+		if (line) {
+			const details: ToolCardDetails = { toolName, result: line, isError: false, cwd: process.cwd() };
+			return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details }, { expanded: false }, theme, takeover.display, { text: line, format: "command" });
+		}
+	}
+	const astOn = isTweakEnabled("ast-structuring");
+	const outline = !astOn ? undefined : toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
 		const details: ToolCardDetails = { toolName, result: outline.text, isError: false, cwd: process.cwd() };
@@ -1458,7 +1521,13 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 		const job = /\bbg_\d+\b/.exec(resultText)?.[0];
 		return new Text(theme.fg("muted", `↳ backgrounded${job ? ` as ${job}` : ""}; output follows when it finishes`), 0, 0);
 	}
-	// Let hydemods structure and format tool output (including TOON) whenever possible.
+	if (toolName === "bash" && !result.isError && resultText) {
+		const summary = testSummaryLine(sanitizeTerminalText(resultText), theme);
+		if (summary) return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName, result: summary, isError: false, cwd: process.cwd() } }, { expanded: options.expanded }, theme, takeover.display, { text: summary, format: "command" });
+		const source = bashSourceStructured(args, resultText, isTweakEnabled("ast-structuring"));
+		if (source) return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName, result: source.text, isError: false, cwd: process.cwd() } }, { expanded: options.expanded }, theme, takeover.display, source);
+	}
+	if (!result.isError && nativeRendersJsonTree(toolName, args, resultText)) return undefined;
 	// Huge results keep the native card: hydemods would re-parse, colour and Markdown-render
 	// the whole payload on every repaint, and the native card already limits what it draws.
 	if (resultText !== undefined && cappedRenderPayload(resultText) === undefined) return undefined;

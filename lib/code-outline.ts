@@ -56,6 +56,7 @@ const DECLARATION_START =
 const TEST_BLOCK_START = /^(?:(?:describe|test|it|context|suite)\s*(?:\.\w+)*\s*\(\s*(["'`])([\s\S]*?)\1)/;
 const CONTROL_START = /^(?:if|else|for|while|do|switch|match|case|try|catch|finally|return|throw|await|yield|with|new|import|from|using)\b|^[)\]}.]/;
 const CALL_LITERAL_END = /(?:\(\s*[{[]|,\s*[{[]|\(\s*)$/;
+const COMMENT_ONLY = /^\s*(?:\/\/|#(?:\s|$)|\*(?:[\s/]|$)|\/\*)/;
 const COMMENT_LINE = /^(?:\/\/|#|\*|\/\*)/;
 
 function count(text: string, char: string): number {
@@ -443,7 +444,7 @@ function enclosingChain(declarations: Declaration[], start: number, end: number)
  * declaration's signature chain and the range's lines beneath it. Undefined when the range
  * touches no declaration at all.
  */
-export function renderRange(outline: Outline, lines: string[], start: number, end: number, label: string): string[] | undefined {
+export function renderRange(outline: Outline, lines: string[], start: number, end: number, label: string, dropped: readonly boolean[] = []): string[] | undefined {
 	const chain = enclosingChain(outline.declarations, start, end);
 	const inside = flattenDeclarations(outline.declarations).filter(declaration => declaration.line >= start && declaration.line <= end);
 	if (inside.length > 0) {
@@ -461,8 +462,8 @@ export function renderRange(outline: Outline, lines: string[], start: number, en
 	for (const declaration of chain) rows.push(signatureRow(declaration));
 	const indent = "  ".repeat(innermost.depth + 2);
 	const hiddenBefore = start - innermost.bodyStart;
-	if (hiddenBefore > 0) rows[rows.length - 1] += `  ⋯${hiddenBefore}`;
-	const excerpt = lines.slice(start - 1, end);
+	if (hiddenBefore > 0) rows.push(`${indent}⋯${hiddenBefore}`);
+	const excerpt = lines.slice(start - 1, end).filter((_, offset) => !dropped[start - 1 + offset]);
 	const common = commonIndent(excerpt);
 	excerpt.forEach(line => rows.push(`${indent}${line.slice(common)}`));
 	const hiddenAfter = innermost.bodyEnd - end;
@@ -667,6 +668,7 @@ export function renderEditOutline(input: EditOutlineInput, label: string, summar
 		: row.added !== undefined ? [`+ ${row.added.trim()}`] : [`− ${row.removed!.trim()}`];
 	const attach = (key: Declaration | "top", row: ChangeRow) => {
 		if (!row.added?.trim() && !row.removed?.trim()) return;
+		if ([row.added, row.removed].every(text => text === undefined || COMMENT_ONLY.test(text))) return;
 		const list = detailsFor.get(key) ?? [];
 		list.push(...detail(row));
 		detailsFor.set(key, list);
