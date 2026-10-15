@@ -16,7 +16,12 @@ const STYLES: Record<string, CommentStyle> = {
 	dart: SLASH, php: SLASH, zig: SLASH_CHARS,
 	py: HASH, rb: HASH, sh: HASH, bash: HASH, zsh: HASH, yaml: HASH, yml: HASH, toml: HASH, conf: HASH, ex: HASH, exs: HASH,
 	sql: DASH, lua: DASH,
+	mk: HASH, rake: HASH, gemspec: HASH, cfg: HASH, tf: HASH, hcl: HASH, nix: HASH, ps1: HASH, pl: HASH, r: HASH,
+	zshrc: HASH, bashrc: HASH, profile: HASH, gitignore: HASH, dockerignore: HASH, env: HASH, jsonc: SLASH, json5: SLASH,
 };
+
+// Files whose name carries no extension but whose comments are `#`.
+const HASH_BASENAMES = new Set(["makefile", "dockerfile", "gemfile", "rakefile", "procfile", "brewfile", "justfile"]);
 
 /** Languages whose comments {@link stripComments} understands, by file extension. */
 export function hasCommentStyle(ext: string | undefined): boolean {
@@ -24,6 +29,8 @@ export function hasCommentStyle(ext: string | undefined): boolean {
 }
 
 export function extensionOf(path: string): string | undefined {
+	const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+	if (HASH_BASENAMES.has(base)) return "sh";
 	return /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
 }
 
@@ -168,17 +175,23 @@ export function groupGrepPrefixes(text: string): { text: string; grouped: boolea
 	const paths = [...new Set(matches.map(m => m[1]))].sort((a, b) => b.length - a.length);
 	const out: string[] = [];
 	let current: string | undefined;
+	let currentExt: string | undefined;
 	const open = (path: string) => {
 		if (path === current) return;
-		if (current !== undefined) out.push("");
 		out.push(path);
 		current = path;
+		currentExt = extensionOf(path);
+	};
+	// A row that is only a comment in its file's language is noise on a card; the rest stays exactly.
+	const push = (row: string) => {
+		if (hasCommentStyle(currentExt) && scanComments(row, currentExt).dropped[0]) return;
+		out.push(row);
 	};
 	for (const row of rows) {
 		const match = GREP_MATCH_ROW.exec(row);
 		if (match && isGrepPath(match[1])) {
 			open(match[1]);
-			out.push(match[3]);
+			push(match[3]);
 			continue;
 		}
 		if (row === "--") { out.push("…"); continue; }
@@ -186,7 +199,7 @@ export function groupGrepPrefixes(text: string): { text: string; grouped: boolea
 		const index = context.findIndex(found => found !== null);
 		if (index >= 0) {
 			open(paths[index]);
-			out.push(context[index]![2]);
+			push(context[index]![2]);
 			continue;
 		}
 		out.push(row);
@@ -194,12 +207,14 @@ export function groupGrepPrefixes(text: string): { text: string; grouped: boolea
 	return { text: out.join("\n"), grouped: true };
 }
 
+const BARE_SOURCE_TOKEN = /(?:^|[\s"'=<>(])((?:~\/|\.{0,2}\/)?(?:[\w@.+-]+\/)*(?:Makefile|Dockerfile|Gemfile|Rakefile|Procfile|Brewfile|Justfile))(?=$|[\s"'|&;:)<>])/g;
 const SOURCE_TOKEN = /(?:^|[\s"'=<>(])((?:~\/|\.{0,2}\/)?[\w@.+/-]*\.([A-Za-z0-9]+))(?=$|[\s"'|&;:)<>])/g;
 
 /** The last source file a shell command names (`sed -n 1,5p src/a.ts`), whose text it prints. */
 export function commandSourcePath(command: string): string | undefined {
 	let found: string | undefined;
 	for (const match of command.matchAll(SOURCE_TOKEN)) if (hasCommentStyle(match[2])) found = match[1];
+	for (const match of command.matchAll(BARE_SOURCE_TOKEN)) found = match[1];
 	return found;
 }
 

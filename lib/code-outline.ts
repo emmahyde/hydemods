@@ -468,7 +468,7 @@ export function renderRange(outline: Outline, lines: string[], start: number, en
 	const indent = "  ".repeat(innermost.depth + 2);
 	const hiddenBefore = start - innermost.bodyStart;
 	if (hiddenBefore > 0) rows.push(`${indent}⋯${hiddenBefore}`);
-	const excerpt = lines.slice(start - 1, end).filter((_, offset) => !dropped[start - 1 + offset]);
+	const excerpt = lines.slice(start - 1, end).filter((line, offset) => !dropped[start - 1 + offset] && line.trim() !== "");
 	const common = commonIndent(excerpt);
 	excerpt.forEach(line => rows.push(`${indent}${line.slice(common).replace(/^\t+/, tabs => "  ".repeat(tabs.length))}`));
 	const hiddenAfter = innermost.bodyEnd - end;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commandSourcePath, compactBlocks, groupGrepPrefixes, joinLoneClosers, printsLineNumbers, scanComments, stripComments, stripLineNumbers } from "../lib/source-text";
+import { commandSourcePath, compactBlocks, extensionOf, groupGrepPrefixes, joinLoneClosers, printsLineNumbers, scanComments, stripComments, stripLineNumbers } from "../lib/source-text";
 
 test("comment-only lines vanish while trailing comments, strings and URLs survive", () => {
 	const code = [
@@ -83,13 +83,13 @@ test("a single numbered row is a gutter when the command is one that numbers its
 test("grep -rn path:line: prefixes become one header per file, text and indent untouched", () => {
 	const raw = [
 		"view/mod.rs:195:    let x = 1;",
-		"view/mod.rs-196-    // context",
+		"view/mod.rs-196-    let y = 2;",
 		"view/mod.rs:210:fn f() {}",
 		"--",
 		"lib/a-b.ts:4:  see http://host:80:x",
 	].join("\n");
 	expect(groupGrepPrefixes(raw)).toEqual({
-		text: ["view/mod.rs", "    let x = 1;", "    // context", "fn f() {}", "…", "", "lib/a-b.ts", "  see http://host:80:x"].join("\n"),
+		text: ["view/mod.rs", "    let x = 1;", "    let y = 2;", "fn f() {}", "…", "lib/a-b.ts", "  see http://host:80:x"].join("\n"),
 		grouped: true,
 	});
 });
@@ -168,6 +168,26 @@ test("a multi-line list that fits becomes one tight row", () => {
 test("path:line: prefixes are lifted into one header per file", () => {
 	const out = groupGrepPrefixes("index.ts:1116:function a() {}\nindex.ts:1123:function b() {}\nlib/x.ts:4:const c = 1;");
 	expect(out.grouped).toBe(true);
-	expect(out.text).toBe("index.ts\nfunction a() {}\nfunction b() {}\n\nlib/x.ts\nconst c = 1;");
+	expect(out.text).toBe("index.ts\nfunction a() {}\nfunction b() {}\nlib/x.ts\nconst c = 1;");
 	expect(out.text).not.toMatch(/:\d+:/);
+});
+
+test("grouped grep rows drop comment-only lines in the file's own comment style, and keep code with trailing comments", () => {
+	const raw = [
+		"a.rs:1:// only a comment",
+		"a.rs:2:let x = 1; // trailing",
+		"b.sh:3:# only a comment",
+		"b.sh:4:echo \"# not a comment\"",
+		"notes.txt:5:// plain text keeps its slashes",
+	].join("\n");
+	expect(groupGrepPrefixes(raw).text).toBe(
+		["a.rs", "let x = 1; // trailing", "b.sh", "echo \"# not a comment\"", "notes.txt", "// plain text keeps its slashes"].join("\n"),
+	);
+});
+
+test("extensionless build files and dotfiles are #-comment sources", () => {
+	expect(commandSourcePath("cat Makefile")).toBe("Makefile");
+	expect(commandSourcePath("sed -n 1,20p docker/Dockerfile")).toBe("docker/Dockerfile");
+	expect(stripComments("# build\nall:\n\tgo build", extensionOf("Makefile"))).toBe("all:\n\tgo build");
+	expect(stripComments("# prompt\nexport A=1", extensionOf("~/.zshrc"))).toBe("export A=1");
 });

@@ -1401,7 +1401,8 @@ function bashSourceStructured(args: unknown, text: string, ast: boolean): Struct
 			return { text: renderOutline(outline, displayPath(path)).join("\n"), format: "outline", lang: outline.language, path };
 		}
 	}
-	return { text: isBraceLanguage(ext) ? compactBlocks(code, { singleQuotes: ext !== "rs" && ext !== "go" }) : joinLoneClosers(code), format: "code", lang: ext };
+	const compact = isBraceLanguage(ext) ? compactBlocks(code, { singleQuotes: ext !== "rs" && ext !== "go" }) : joinLoneClosers(code);
+	return { text: compact.split("\n").filter(row => row.trim() !== "").join("\n"), format: "code", lang: ext };
 }
 
 // The hydemods view of one settled result, or undefined when the native renderer should draw it:
