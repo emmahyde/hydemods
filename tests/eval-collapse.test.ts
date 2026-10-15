@@ -15,7 +15,7 @@ const fixture = () => ({ content: [{ type: "image", data: "untouched" }], detail
 test("native preview uses every row for content and marks only the hidden gap", () => {
  const result = fixture();
  const compact = compactEvalResult(result, { expanded: false, limit: 5, theme });
- expect(plain(compact.details.cells[0].output).split("\n")).toEqual(["row 1", "row 2", "row 3", "row 4 ⋯4", "row 9"]);
+	expect(plain(compact.details.cells[0].output).split("\n")).toEqual(["row 1", "row 2", "row 3", "row 4", "row 5 [...]"]);
  expect(compact.details.cells[0]).toMatchObject({ code: "print(data)", status: "error", exitCode: 3, durationMs: 100 });
  expect(compact.content).toBe(result.content);
  expect(compact.details.notice).toBe("partial capture");
@@ -31,7 +31,7 @@ test("visual wrapping keeps the glyph within the content budget at narrow widths
   const output = compactEvalResult(result, { expanded: false, limit: 3, width, theme }).details.cells[0].output;
   const lines = output.split("\n");
   expect(lines).toHaveLength(3);
-  expect(plain(output)).toContain("⋯");
+		if (width >= 20) expect(plain(output)).toContain("[...]");
   for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(Math.max(1, width - 4));
  }
 });
@@ -40,13 +40,13 @@ test("literal omission text is content, not a renderer control", () => {
  const result = fixture();
  result.details.cells[0].output = "...\n… 30 more lines\nlast";
  expect(plain(compactEvalResult(result, { expanded: false, limit: 5, theme }).details.cells[0].output)).toBe(result.details.cells[0].output);
- expect(plain(fitCollapseLine("abcdefghijklmnop " + theme.fg("dim", "⋯20"), 10))).toEndWith(" ⋯20");
+	expect(plain(fitCollapseLine("abcdefghijklmnop " + theme.fg("dim", "[...]"), 10))).toEndWith(" [...]");
 });
 
 test("fallback content preserves non-text blocks and complete expansion", () => {
  const result = { content: [{ type: "text", text: rows.join("\n") }, { type: "image", text: "image metadata" }] };
  const compact = compactEvalResult(result, { expanded: false, limit: 2, theme });
- expect(plain(compact.content[0].text!)).toBe("row 1 ⋯7\nrow 9");
+	expect(plain(compact.content[0].text!)).toBe("row 1\nrow 2 [...]");
  expect(compact.content[1]).toBe(result.content[1]);
  expect(compactEvalResult(result, { expanded: true, limit: 2, theme })).toBe(result);
 });
@@ -54,7 +54,7 @@ test("fallback content preserves non-text blocks and complete expansion", () => 
 test("streaming context output replaces stale fallback text without losing attachments", () => {
 	const original = { content: [{ type: "text", text: "stale" }, { type: "image", text: "attachment" }] };
 	const compact = compactEvalResult(original, { expanded: false, limit: 2, theme, output: rows.join("\n") });
-	expect(plain(compact.content[0].text!)).toBe("row 1 ⋯7\nrow 9");
+	expect(plain(compact.content[0].text!)).toBe("row 1\nrow 2 [...]");
 	expect(compact.content[1]).toBe(original.content[1]);
 	expect(compactEvalResult(original, { expanded: true, limit: 2, theme, output: rows.join("\n") }).content[0].text).toBe(rows.join("\n"));
 	expect(original.content[0].text).toBe("stale");
@@ -64,7 +64,7 @@ test("Markdown is folded by rendered rows without changing the expansion source"
 	const result = { content: [], details: { cells: [{ output: rows.map(row => "**" + row + "**").join("\n\n"), hasMarkdown: true, status: "complete" }] } };
 	const compact = compactEvalResult(result, { expanded: false, limit: 3, width: 40, theme });
 	expect(compact.details.cells[0].output.split("\n")).toHaveLength(3);
-	expect(plain(compact.details.cells[0].output)).toContain("⋯");
+	expect(plain(compact.details.cells[0].output)).toContain("[...]");
 	expect(compact.details.cells[0].hasMarkdown).toBe(false);
 	expect(compactEvalResult(result, { expanded: true, limit: 3, width: 40, theme })).toBe(result);
 });

@@ -313,15 +313,15 @@ describe("card verify harness for TOON output", async () => {
 		const renderer = toolRenderers.eval;
 		const args = { language: "js", code: "print(rows)" };
 		const folded = plain(renderer.renderResult(result, { expanded: false, isPartial: false }, themeModule.theme, args)!.render(100).join("\n"));
-		expect(folded).toContain("output-row-4 ⋯7");
-		expect(folded).toContain("output-row-12");
+		expect(folded).toContain("output-row-5 [...]");
+		expect(folded).not.toContain("output-row-6");
+		expect(folded).not.toContain("output-row-12");
 		expect(folded).not.toContain("more lines");
-		expect(folded).not.toContain("output-row-5");
 		const expanded = plain(renderer.renderResult(result, { expanded: true, isPartial: false }, themeModule.theme, args)!.render(100).join("\n"));
 		for (const row of rows) expect(expanded).toContain(row);
-		expect(expanded).not.toContain("⋯7");
+		expect(expanded).not.toContain("[...]");
 		const native = renderer.describeResult!(result, { expanded: false, isPartial: false }, args)!;
-		expect(plain(nativeText(native.body![0]))).toContain("output-row-4 ⋯7");
+		expect(plain(nativeText(native.body![0]))).toContain("output-row-5 [...]");
 		expect(JSON.stringify(native)).toContain("omp.run.foot");
 	});
 

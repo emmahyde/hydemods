@@ -37,15 +37,19 @@ export function cappedRenderPayload<T>(value: T): T | undefined {
 	return bytes > MAX_RENDER_BYTES ? undefined : value;
 }
 
-/** Keep the full row budget for content; the glyph marks the gap without its own row. */
-export function collapseTextLines(lines: string[], limit: number, expanded: boolean, options: { edge?: "head" | "middle"; marker?: (hidden: number) => string } = {}): string[] {
+/** Keep the full row budget for content; sequential lines with [...] on the last line. */
+export function collapseTextLines(
+	lines: string[],
+	limit: number,
+	expanded: boolean,
+	options: { edge?: "head" | "middle"; marker?: (hidden: number) => string } = {},
+): string[] {
 	const count = Math.max(1, Math.floor(limit));
 	if (expanded || lines.length <= count) return lines;
-	const marker = options.marker?.(lines.length - count) ?? `⋯${lines.length - count}`;
-	const headCount = options.edge === "head" || count === 1 ? count : count - 1;
-	const shown = lines.slice(0, headCount);
-	shown[shown.length - 1] = `${shown[shown.length - 1]} ${marker}`;
-	if (headCount < count) shown.push(lines[lines.length - 1]);
+	const marker = options.marker?.(lines.length - count) ?? "[...]";
+	const shown = lines.slice(0, count);
+	const last = shown[shown.length - 1];
+	shown[shown.length - 1] = last.trimEnd() ? `${last.trimEnd()} ${marker}` : marker;
 	return shown;
 }
 

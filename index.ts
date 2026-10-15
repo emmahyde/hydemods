@@ -732,12 +732,11 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 					: tree),
 			];
 			selected = collapseTextLines(selected, limit, false, {
-				edge: structured.format === "outline" || structured.format === "edit-outline" ? "head" : "middle",
-				marker: hidden => theme.fg("muted", `⋯${hidden}`),
+				marker: () => theme.fg("muted", "[...]"),
 			});
 			if (diagnosticsAt >= 0) {
 				const messages = renderedContent.slice(diagnosticsAt + 1);
-				const kept = collapseTextLines(messages, 3, false, { edge: "head", marker: hidden => theme.fg("muted", `⋯${hidden}`) });
+				const kept = collapseTextLines(messages, 3, false, { marker: () => theme.fg("muted", "[...]") });
 				selected = [...selected, renderedContent[diagnosticsAt], ...kept];
 			}
 			return selected.map((line, index) =>
@@ -1223,7 +1222,7 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 // Collapsed outlines keep the first rows and count the rest; expanded shows every row.
 function outlineRows(outline: string[], expanded: boolean, limit: number, theme: Theme): string[] {
 	const colored = outline.map(line => colorizeOutlineLine(line, theme));
-	return collapseTextLines(colored, limit, expanded, { edge: "head", marker: hidden => theme.fg("muted", `⋯${hidden}`) });
+	return collapseTextLines(colored, limit, expanded, { marker: () => theme.fg("muted", "[...]") });
 }
 
 function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
@@ -1612,7 +1611,7 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 		const chooser = [...options, custom].filter(Boolean).join(theme.fg("muted", "·"));
 		return [
 			` ${marker} ${chooser}  ${theme.bold("Collapsed card lines")}`,
-			theme.fg("muted", "           Content rows per collapsed card; ⋯ marks the hidden rows inline."),
+			theme.fg("muted", "           Content rows per collapsed card; [...] marks truncation inline."),
 			"           ←/→ pick a preset; +/- step by one; also /hydemods collapsed-lines N.",
 		];
 	};
