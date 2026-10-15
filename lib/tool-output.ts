@@ -37,12 +37,16 @@ export function cappedRenderPayload<T>(value: T): T | undefined {
 	return bytes > MAX_RENDER_BYTES ? undefined : value;
 }
 
-/** Keep a bounded preview while retaining every line when the host requests expansion. */
-export function collapseTextLines(lines: string[], limit: number, expanded: boolean): string[] {
-	if (expanded || lines.length <= limit) return lines;
-	if (limit <= 1) return [`${lines[0] ?? ""} …`];
-	if (limit < 3) return [...lines.slice(0, limit - 1), `… ${lines.length - (limit - 1)} more`];
-	return [...lines.slice(0, limit - 2), "…", lines[lines.length - 1]];
+/** Keep the full row budget for content; the glyph marks the gap without its own row. */
+export function collapseTextLines(lines: string[], limit: number, expanded: boolean, options: { edge?: "head" | "middle"; marker?: (hidden: number) => string } = {}): string[] {
+	const count = Math.max(1, Math.floor(limit));
+	if (expanded || lines.length <= count) return lines;
+	const marker = options.marker?.(lines.length - count) ?? `⋯${lines.length - count}`;
+	const headCount = options.edge === "head" || count === 1 ? count : count - 1;
+	const shown = lines.slice(0, headCount);
+	shown[shown.length - 1] = `${shown[shown.length - 1]} ${marker}`;
+	if (headCount < count) shown.push(lines[lines.length - 1]);
+	return shown;
 }
 
 /**

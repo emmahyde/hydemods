@@ -11,7 +11,7 @@ import { summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme as uiTheme } from "@oh-my-pi/pi-tui/theme";
-import { fileHyperlink } from "@oh-my-pi/pi-tui/render";
+import { fileHyperlink, previewWindowRows } from "@oh-my-pi/pi-tui/render";
 import { getMarkdownTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
@@ -741,7 +741,7 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 				selected = [...selected, renderedContent[diagnosticsAt], ...kept];
 			}
 			return selected.map((line, index) =>
-				padToolBlockLine(truncateToWidth(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
+				padToolBlockLine(fitCollapseLine(`${index === 0 ? coloredPrefix : hangingIndent}${line}`, width), width));
 		},
 		invalidate() { markdown?.invalidate(); },
 	};
@@ -1289,7 +1289,7 @@ function renderReadTree(rows: ReadTreeRow[], state: ReadGroupState, theme: Theme
 			lines.push(...usageLines(row.id, `   ${guide} `));
 		});
 	}
-	return lines.map(line => truncateToWidth(line, width));
+	return lines.map(line => fitCollapseLine(line, width));
 }
 
 type CardTakeover = {
@@ -1493,14 +1493,32 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 			},
 			renderResult(result, options, theme, args) {
 				if (name === "eval") {
+					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
 					const nativeOptions = { ...options, renderContext: {
 						...(options as { renderContext?: object }).renderContext,
 						previewLines: takeover.display.collapsedLines,
 					} };
-					return original.renderResult(
-						takeover.active() ? evalViewResult(result, options.isPartial, theme, takeover) : result,
-						nativeOptions, theme, takeover.active() ? evalViewArgs(args, takeover) : args,
-					);
+					const active = takeover.active();
+					const formatted = active ? evalViewResult(result, options.isPartial, theme, takeover) : result;
+					const callArgs = active ? evalViewArgs(args, takeover) : args;
+					const base = original.renderResult(formatted, nativeOptions, theme, callArgs);
+					if (!active || !base) return base;
+					const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+					let cachedWidth = -1;
+					let cachedLimit = -1;
+					let component = base;
+					return Object.assign(Object.create(base), {
+						render(width: number): readonly string[] {
+							const limit = Math.min(takeover.display.collapsedLines, previewWindowRows());
+							if (width !== cachedWidth || limit !== cachedLimit) {
+								cachedWidth = width;
+								cachedLimit = limit;
+								component = original.renderResult(compactEvalResult(formatted, { expanded, limit, width, theme, output: context?.output }), { ...nativeOptions, renderContext: { ...nativeOptions.renderContext, output: undefined } }, theme, callArgs) ?? base;
+							}
+							return component.render(width);
+						},
+						invalidate() { cachedWidth = -1; component.invalidate?.(); },
+					});
 				}
 				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
 				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
@@ -1510,11 +1528,16 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 			original.describeCall!(name === "eval" && takeover.active() ? evalViewArgs(args, takeover) : args, options);
 		if (original.describeResult) {
 			wrapped.describeResult = (result, options, args) => {
-				if (name === "eval") return original.describeResult!(
-					takeover.active() ? evalViewResult(result, options.isPartial, uiTheme, takeover) : result,
-					{ ...options, renderContext: { ...(options as { renderContext?: object }).renderContext, previewLines: takeover.display.collapsedLines } },
-					takeover.active() ? evalViewArgs(args, takeover) : args,
-				);
+				if (name === "eval") {
+					const active = takeover.active();
+					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
+					const formatted = active ? evalViewResult(result, options.isPartial, uiTheme, takeover) : result;
+					return original.describeResult!(
+						active ? compactEvalResult(formatted, { expanded: context?.expanded ?? options.expanded, limit: takeover.display.collapsedLines, theme: uiTheme, output: context?.output }) : result,
+						{ ...options, renderContext: { ...context, ...(active ? { output: undefined } : {}), previewLines: takeover.display.collapsedLines } },
+						active ? evalViewArgs(args, takeover) : args,
+					);
+				}
 				if (takeover.active() && !options.isPartial) {
 					const resultText = toolResultText(result.content);
 					if (resultText !== undefined && cappedRenderPayload(resultText) !== undefined) {

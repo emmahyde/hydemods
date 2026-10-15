@@ -461,12 +461,12 @@ export function renderRange(outline: Outline, lines: string[], start: number, en
 	for (const declaration of chain) rows.push(signatureRow(declaration));
 	const indent = "  ".repeat(innermost.depth + 2);
 	const hiddenBefore = start - innermost.bodyStart;
-	if (hiddenBefore > 0) rows.push(`${indent}⋯${hiddenBefore}`);
+	if (hiddenBefore > 0) rows[rows.length - 1] += `  ⋯${hiddenBefore}`;
 	const excerpt = lines.slice(start - 1, end);
 	const common = commonIndent(excerpt);
 	excerpt.forEach(line => rows.push(`${indent}${line.slice(common)}`));
 	const hiddenAfter = innermost.bodyEnd - end;
-	if (hiddenAfter > 0) rows.push(`${indent}⋯${hiddenAfter}`);
+	if (hiddenAfter > 0) rows[rows.length - 1] += `  ⋯${hiddenAfter}`;
 	if (innermost.endLine > innermost.bodyEnd) rows.push(`${"  ".repeat(innermost.depth + 1)}${lines[innermost.endLine - 1].trim()}`);
 	return rows;
 }

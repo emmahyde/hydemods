@@ -62,8 +62,12 @@ test("payloads past the render cap are handed to the native card", () => {
 
 test("collapsed tool previews retain the last line and expansion restores every line", () => {
 	const lines = ["instruction one", "instruction two", "instruction three", "instruction four"];
-	expect(collapseTextLines(lines, 3, false)).toEqual(["instruction one", "…", "instruction four"]);
+	expect(collapseTextLines(lines, 3, false)).toEqual(["instruction one", "instruction two ⋯1", "instruction four"]);
 	expect(collapseTextLines(lines, 3, true)).toEqual(lines);
+	expect(collapseTextLines(lines, 1, false)).toEqual(["instruction one ⋯3"]);
+	expect(collapseTextLines(lines, 2, false)).toEqual(["instruction one ⋯2", "instruction four"]);
+	expect(collapseTextLines(lines, 3, false, { edge: "head" })).toEqual(["instruction one", "instruction two", "instruction three ⋯1"]);
+	expect(collapseTextLines(lines, 4, false)).toEqual(lines);
 });
 
 test("the TOON toggle switches JSON output to pretty JSON", () => {

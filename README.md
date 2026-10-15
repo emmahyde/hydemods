@@ -16,6 +16,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 
 - **Integrated tool cards.** Results show inside the tool card of OMP.
   - Prose reads, Bash output, and Python output collapse to a preview. Ctrl+O shows all.
+  - Collapsed previews keep their row budget for content. An inline `⋯N` marks the gap and counts the hidden rows; it never takes a separate row.
   - Reads and writes show the declaration outline. Writes add LSP diagnostics.
   - Edits show the declarations they touched. Ctrl+O shows the changed lines.
   - Background shell commands collapse to one line.
