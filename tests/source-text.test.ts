@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commandSourcePath, printsLineNumbers, scanComments, stripComments, stripLineNumbers } from "../lib/source-text";
+import { commandSourcePath, compactBlocks, groupGrepPrefixes, joinLoneClosers, printsLineNumbers, scanComments, stripComments, stripLineNumbers } from "../lib/source-text";
 
 test("comment-only lines vanish while trailing comments, strings and URLs survive", () => {
 	const code = [
@@ -78,4 +78,96 @@ test("a single numbered row is a gutter when the command is one that numbers its
 	expect(printsLineNumbers("cat -n a.ts")).toBe(true);
 	expect(printsLineNumbers("grep -rl foo src")).toBe(false);
 	expect(printsLineNumbers("git log --oneline")).toBe(false);
+});
+
+test("grep -rn path:line: prefixes become one header per file, text and indent untouched", () => {
+	const raw = [
+		"view/mod.rs:195:    let x = 1;",
+		"view/mod.rs-196-    // context",
+		"view/mod.rs:210:fn f() {}",
+		"--",
+		"lib/a-b.ts:4:  see http://host:80:x",
+	].join("\n");
+	expect(groupGrepPrefixes(raw)).toEqual({
+		text: ["view/mod.rs", "    let x = 1;", "    // context", "fn f() {}", "…", "", "lib/a-b.ts", "  see http://host:80:x"].join("\n"),
+		grouped: true,
+	});
+});
+
+test("colon text that is not a path:line: prefix is left alone", () => {
+	for (const text of ["http://example.com:8080:x\nnote: 5: items", "Error: 12: bad\nstatus: 3: ok"]) {
+		expect(groupGrepPrefixes(text)).toEqual({ text, grouped: false });
+	}
+});
+
+test("a small try/catch folds to one row and the shared indent goes", () => {
+	const code = [
+		"          try {",
+		"            linkable = statSync(path).isFile();",
+		"          } catch {",
+		"            linkable = false;",
+		"          }",
+	].join("\n");
+	expect(compactBlocks(code)).toBe("try { linkable = statSync(path).isFile(); } catch { linkable = false; }");
+});
+
+test("a block too wide for one row keeps its frame and folds what is inside", () => {
+	const code = [
+		"if (ready) {",
+		"  const a = [",
+		"    1,",
+		"    2,",
+		"  ];",
+		"  run(" + "x".repeat(110) + ");",
+		"}",
+	].join("\n");
+	expect(compactBlocks(code)).toBe(["if (ready) {", "  const a = [1, 2];", "  run(" + "x".repeat(110) + ");", "}"].join("\n"));
+});
+
+test("braces inside strings do not unbalance a fold", () => {
+	const code = "f(() => {\n  log(\"}\");\n});";
+	expect(compactBlocks(code)).toBe('f(() => { log("}"); });');
+});
+
+test("unbalanced excerpts and blank lines pass through", () => {
+	expect(compactBlocks("} else {\n  x();\n\ny();")).toBe("} else {\n  x();\n\ny();");
+});
+
+test("a call too wide to join ends its last argument with the paren, never a lone `)`", () => {
+	const wide = "x".repeat(110);
+	const code = ["run(", `  ${wide},`, `  ${wide}`, ");"].join("\n");
+	const out = compactBlocks(code);
+	expect(out).toBe(["run(", `  ${wide},`, `  ${wide});`].join("\n"));
+	expect(out.split("\n").some(row => /^\s*[)\]]/.test(row))).toBe(false);
+});
+
+test("joinLoneClosers folds paren and bracket closers upward but keeps a bare brace", () => {
+	expect(joinLoneClosers("f(\n  a,\n)")).toBe("f(\n  a,)");
+	expect(joinLoneClosers("f({\n  a: 1,\n})")).toBe("f({\n  a: 1,\n})");
+	expect(joinLoneClosers("xs = [\n  1,\n],\n")).toBe("xs = [\n  1,],\n");
+	expect(joinLoneClosers("if x {\n  y\n}")).toBe("if x {\n  y\n}");
+	expect(joinLoneClosers("a\n\n)")).toBe("a\n\n)");
+	expect(joinLoneClosers('log("a\n");')).toBe('log("a");');
+});
+
+test("an empty pair is one row", () => {
+	expect(joinLoneClosers("xs = [\n]")).toBe("xs = []");
+	expect(joinLoneClosers("xs = [\n];")).toBe("xs = [];");
+	expect(joinLoneClosers("run(\n)")).toBe("run()");
+	expect(joinLoneClosers("fn f() {\n}")).toBe("fn f() {}");
+	expect(joinLoneClosers("a: [\n  ],\nb: {\n},")).toBe("a: [],\nb: {},");
+	expect(joinLoneClosers("xs = [\n  1,\n]")).toBe("xs = [\n  1,]");
+});
+
+test("a multi-line list that fits becomes one tight row", () => {
+	expect(compactBlocks("const xs = [\n  x,\n  y,\n  z\n];")).toBe("const xs = [x, y, z];");
+	expect(compactBlocks("const xs = [\n  x,\n  y,\n  z,\n];")).toBe("const xs = [x, y, z];");
+	expect(compactBlocks("run(\n  a,\n  b,\n);")).toBe("run(a, b);");
+});
+
+test("path:line: prefixes are lifted into one header per file", () => {
+	const out = groupGrepPrefixes("index.ts:1116:function a() {}\nindex.ts:1123:function b() {}\nlib/x.ts:4:const c = 1;");
+	expect(out.grouped).toBe(true);
+	expect(out.text).toBe("index.ts\nfunction a() {}\nfunction b() {}\n\nlib/x.ts\nconst c = 1;");
+	expect(out.text).not.toMatch(/:\d+:/);
 });

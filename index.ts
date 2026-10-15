@@ -17,9 +17,11 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
 import { readSourceFsPath, renderFallbackToolCard, renderTaskToolCard, splitPathAndSel } from "./lib/host-copies";
-import { green } from "./lib/colors";
+import { green, grey } from "./lib/colors";
+import { estimateTokens, formatTokens } from "./lib/tokens";
 import { testSummaryLine } from "./lib/test-summary";
-import { commandSourcePath, printsLineNumbers, extensionOf, scanComments, stripComments, stripLineNumbers } from "./lib/source-text";
+import { commandSourcePath, compactBlocks, groupGrepPrefixes, isBraceLanguage, joinLoneClosers, printsLineNumbers, extensionOf, scanComments, stripComments, stripLineNumbers } from "./lib/source-text";
+import { presentReadExcerpt } from "./lib/read-display";
 import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
@@ -54,7 +56,8 @@ import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
@@ -611,7 +614,7 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 		if (/^\s*Result(?: \d+)?(?:;|$)/.test(line)) return theme.fg(/; failed(?:;|$)/.test(line) ? "error" : "accent", line);
 		return line;
 	}
-	if (/^\s*(?:\[[^\]\r\n]+#[\da-f]+\]|#{1,6} .+#[\da-f]+|#{1,6} .+\/)\s*$/i.test(line)) return theme.fg("dim", line);
+	if (/^\s*(?:\[[^\]\r\n]+#(?:[\da-f]+|:[^\]\r\n]*)?\]|#{1,6} .+#[\da-f]+|#{1,6} .+\/)\s*$/i.test(line)) return theme.fg("dim", line);
 	if (/^\s*\[(?:Showing lines|truncated;|Source:)/.test(line) || /^\s*(?:…|\.\.\.)\s*$/.test(line)) return theme.fg("dim", line);
 	if (format === "file") {
 		if (/^\s*[\w$]+(?:\[\d+\])?(?:\{[^}]+\})?:\s/.test(line)) return colorizeAstToonLine(line, theme);
@@ -652,11 +655,7 @@ function colorizeStructuredLine(line: string, format: StructuredFormat, theme: T
 	return indent + colored;
 }
 
-// Tool-card styling. Truecolor lime label (#84cc16); the host card owns the background.
-const TOOL_NAME_ANSI = "\x1b[1;38;2;156;219;117m";
-const PROMPT_ANSI = "\x1b[1;38;2;156;219;117m";
-const ANSI_RESET = "\x1b[0m";
-
+// Tool-card styling: the host card owns the background.
 // Pad one card line to the requested width without changing its background.
 function padToolBlockLine(line: string, width: number): string {
 	const visible = visibleWidth(line);
@@ -695,33 +694,32 @@ function structureToolResult(details: ToolCardDetails | undefined): StructuredTe
 	return structured;
 }
 
-// File excerpts keep their `[name#tag]` header; the code under it loses its comments.
-function commentFreeText(structured: StructuredText): string {
-	if (structured.format !== "file") return structured.text;
-	const header = /^\[([^\]#\r\n]+)#[\da-f]+\]\r?\n/.exec(structured.text);
-	const ext = header ? extensionOf(header[1]) : undefined;
-	if (!header || ext === undefined) return structured.text;
-	return header[0] + stripComments(structured.text.slice(header[0].length), ext);
+// File excerpts show `[name#:range]` instead of the snapshot header; the code under it loses its
+// line numbers and comments. The host's display text wins over the model-facing text.
+function commentFreeText(structured: StructuredText, displayText?: string): string {
+	if (structured.format !== "file" || !/^\[[^\]#\r\n]+#[\da-f]+\]\r?\n/i.test(structured.text)) return structured.text;
+	const shown = presentReadExcerpt({ text: structured.text, displayContent: displayText === undefined ? undefined : { text: displayText }, filenameShown: false });
+	return shown.header ? `${shown.header}\n${shown.body}` : shown.body;
 }
 
 function toolMessageRenderer(message: ToolMessage, options: RendererOptions, theme: Theme, display: ToolDisplayState, structured: StructuredText = structureToolResult(message.details)) {
 	const details = message.details;
 	const toolName = details?.toolName || "tool";
 	const error = details?.isError;
-	const pretty = commentFreeText(structured).trim() || "(empty)";
+	const resultDetails = (details?.result as { details?: ReadOutlineDetails } | undefined)?.details;
+	const pretty = commentFreeText(structured, resultDetails?.displayContent?.text).trim() || "(empty)";
 	const rawLines = pretty
 		.split(/\r?\n/)
 		.map((line) => line.replace(/\t/g, "  ").trimEnd())
 		.filter((line) => structured.format === "command" || line.length > 0);
 
-	const prefixSymbol = error ? "✖" : "$>";
-	const label = `${error ? theme.fg("error", prefixSymbol) : `${PROMPT_ANSI}${prefixSymbol}${ANSI_RESET}`} ${TOOL_NAME_ANSI}${toolName}${ANSI_RESET}`;
+	const label = theme.fg(error ? "error" : "success", toolName);
 	// A quote-style rule between the tool name and its output; continuation rows carry it too.
-	const rule = green("│");
-	const trailingRule = green("┆");
+	const rule = error ? theme.fg("error", "│") : green("│");
+	const trailingRule = error ? theme.fg("error", "┆") : green("┆");
 	const coloredPrefix = `${label} ${rule} `;
-	// Continuation lines hang under the first content column (visible width of "$> name ").
-	const indent = " ".repeat(`${prefixSymbol} ${toolName} `.length);
+	// Continuation lines hang under the first content column (visible width of "name ").
+	const indent = " ".repeat(`${toolName} `.length);
 	const hangingIndent = `${indent}${rule} `;
 
 	const markdown = structured.format === "markdown"
@@ -750,14 +748,31 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 			// Diagnostics sit below the tree and stay visible: the heading and the first few messages.
 			const diagnosticsAt = structured.format === "edit-outline" ? rawLines.findIndex(line => /^ ! Diagnostics/.test(line)) : -1;
 			const tree = diagnosticsAt >= 0 ? renderedContent.slice(0, diagnosticsAt) : renderedContent;
+			let hiddenLines = 0;
 			let selected: string[] = [
 				...(structured.format === "edit-outline"
 					? tree.filter((_, index) => !/^\s{3,}[+−→] /.test(rawLines[index]))
 					: tree),
 			];
-			selected = collapseTextLines(selected, limit, false, {
-				marker: () => theme.fg("muted", "[...]"),
-			});
+			if (selected.length > limit) {
+				if (structured.format === "outline" || structured.format === "edit-outline") {
+					// Outline rows are a list: the last row carries no summary, so count the rest.
+					const shown = Math.max(1, limit - 1);
+					selected = [...selected.slice(0, shown), theme.fg("muted", `… ${selected.length - shown} more`)];
+				} else if (limit <= 1) {
+					// One row is all the space there is, so the first content line carries the
+					// omission mark itself instead of the card showing nothing but `…`.
+					selected = [`${renderedContent[0]} ${theme.fg("muted", "…")}`];
+				} else {
+					if (limit < 3) {
+						selected = [...renderedContent.slice(0, limit - 1), theme.fg("muted", `… ${renderedContent.length - (limit - 1)} more`)];
+					} else {
+						// Output reads in order: the first rows, then the count of what follows in the last row's gutter.
+						selected = renderedContent.slice(0, limit);
+						hiddenLines = renderedContent.length - limit;
+					}
+				}
+			}
 			if (diagnosticsAt >= 0) {
 				const messages = renderedContent.slice(diagnosticsAt + 1);
 				const kept = collapseTextLines(messages, 3, false, { marker: () => theme.fg("muted", "[...]") });
@@ -767,7 +782,10 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 			return selected.map((line, index) => {
 				const trails = selected.length > 1 && index === selected.length - 1;
 				const prefix = index === 0 ? coloredPrefix : hangingIndent;
-				return padToolBlockLine(truncateToWidth(`${trails ? prefix.replace(rule, trailingRule) : prefix}${line}`, width), width);
+				// Estimated tokens in the gutter when lines are hidden (Ctrl+O shows them).
+				const counted = trails && hiddenLines > 0 && diagnosticsAt < 0;
+				const gutter = counted ? `${theme.italic(grey(formatTokens(estimateTokens(pretty)).padEnd(indent.length)))}${trailingRule} ` : trails ? prefix.replace(rule, trailingRule) : prefix;
+				return padToolBlockLine(truncateToWidth(`${gutter}${line}`, width), width);
 			});
 		},
 		invalidate() { markdown?.invalidate(); },
@@ -1245,8 +1263,16 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 	const target = typeof rawPath?.path === "string" ? rawPath.path : typeof rawPath?.file_path === "string" ? rawPath.file_path : "";
 	const split = splitPathAndSel(target);
 	const shown = /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? target : `${displayPath(split.path.startsWith("~/") ? resolve(homedir(), split.path.slice(2)) : resolve(split.path))}${split.sel ? `:${split.sel}` : ""}`;
-	const text = toolResultText(result.content)?.trim();
-	return { header: /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? uiTheme.fg("accent", shown) : uiTheme.fg("accent", underlineLabel(shown)), prose: text ? text.split(/\r?\n/) : undefined };
+	const details = result.details as ReadOutlineDetails | undefined;
+	const modelText = toolResultText(result.content);
+	const displayText = details?.displayContent?.text;
+	const isExcerpt = displayText !== undefined || (modelText !== undefined && /^\[[^\]#\r\n]+#[\da-f]+\]\r?\n/i.test(modelText));
+	const header = isExcerpt ? `[${shown}]` : shown;
+	// The row above already names the file, so only the code body is shown.
+	const text = isExcerpt
+		? presentReadExcerpt({ text: modelText ?? "", displayContent: displayText === undefined ? undefined : { text: displayText }, path: split.path, selector: split.sel || undefined, filenameShown: true }).body.trim()
+		: modelText?.trim();
+	return { header: /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? uiTheme.fg("accent", header) : uiTheme.fg("accent", underlineLabel(header)), prose: text ? text.split(/\r?\n/) : undefined };
 }
 
 // Collapsed outlines keep the first rows and count the rest; expanded shows every row.
@@ -1358,7 +1384,12 @@ function todoOneLine(details: unknown, theme: Theme): string | undefined {
 function bashSourceStructured(args: unknown, text: string, ast: boolean): StructuredText | undefined {
 	const command = (args as { command?: unknown } | undefined)?.command;
 	const path = typeof command === "string" ? commandSourcePath(command) : undefined;
-	const stripped = stripLineNumbers(sanitizeTerminalText(text).replace(/\r\n/g, "\n").replace(/\n+Wall time: [^\n]*\s*$/, ""), typeof command === "string" && printsLineNumbers(command) ? 1 : undefined);
+	const cleaned = sanitizeTerminalText(text).replace(/\r\n/g, "\n").replace(/\n+Wall time: [^\n]*\s*$/, "");
+	const numbering = typeof command === "string" && printsLineNumbers(command);
+	// Rows that all begin `path:line:` (grep -rn, or any tool printing that shape) group under one header per file.
+	const grouped = groupGrepPrefixes(cleaned);
+	if (grouped.grouped) return { text: grouped.text.replace(/^\n+|\s+$/g, ""), format: "code" };
+	const stripped = stripLineNumbers(cleaned, numbering ? 1 : undefined);
 	if (!path && !stripped.numbered) return undefined;
 	const ext = path ? extensionOf(path) : undefined;
 	const code = stripComments(stripped.text, ext).replace(/^\n+|\s+$/g, "");
@@ -1369,7 +1400,7 @@ function bashSourceStructured(args: unknown, text: string, ast: boolean): Struct
 			return { text: renderOutline(outline, displayPath(path)).join("\n"), format: "outline", lang: outline.language, path };
 		}
 	}
-	return { text: code, format: "code", lang: ext };
+	return { text: isBraceLanguage(ext) ? compactBlocks(code, { singleQuotes: ext !== "rs" && ext !== "go" }) : joinLoneClosers(code), format: "code", lang: ext };
 }
 
 // The hydemods view of one settled result, or undefined when the native renderer should draw it:
@@ -1492,12 +1523,19 @@ function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, 
 	};
 }
 function hydemodsResultComponent(toolName: string, result: { content: unknown; details?: unknown; isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme, args: unknown, takeover: CardTakeover) {
-	if (!takeover.active() || options.isPartial) return undefined;
+	if (!takeover.active()) return undefined;
+	// Background-job wait: one status line collapsed; the full snapshot stays in the model result and on Ctrl+O.
+	if (toolName === "wait") {
+		const intent = typeof (args as { i?: unknown } | undefined)?.i === "string" ? (args as { i: string }).i : undefined;
+		const line = waitStatusLine(result, { ...options, intent }, theme);
+		return line === undefined ? undefined : new Text(line, 0, 0);
+	}
+	if (options.isPartial) return undefined;
 	// A rejected edit is routine (stale anchor, retry follows): one line, full text on Ctrl+O.
 	if (toolName === "edit" && result.isError && !options.expanded) {
 		const message = toolResultText(result.content)?.trim() ?? "";
 		const reason = message.split(/\n|(?<=\.)\s/)[0] ?? "edit rejected";
-		return new Text(`${theme.fg("error", "✖ edit rejected:")} ${theme.fg("muted", reason)} ${theme.fg("dim", "(Ctrl+O)")}`, 0, 0);
+		return new Text(`${theme.fg("error", "edit rejected:")} ${theme.fg("muted", reason)} ${theme.fg("dim", "(Ctrl+O)")}`, 0, 0);
 	}
 	if (toolName === "todo" && !result.isError && !options.expanded) {
 		const line = todoOneLine(result.details, theme);
@@ -1547,7 +1585,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 // renderer is wrapped so its result view defers to hydemods when hydemods applies; tools that
 // fall to OMP's generic card keep it, except the ones listed in EXTRA_CARD_TOOLS. Because the
 // native component owns the card, Ctrl+O expansion and hidden tool output apply unchanged.
-const EXTRA_CARD_TOOLS = ["context_notes"];
+const EXTRA_CARD_TOOLS = ["context_notes", "wait"];
 // Tools whose native card is already the better view; hydemods never replaces these.
 const NATIVE_CARD_TOOLS: Record<string, true> = { find: true };
 
@@ -1660,7 +1698,7 @@ const BG_SETTINGS = Object.fromEntries(SURFACES.map((surface) => [surface, {
 
 const BG_ROWS: readonly { surface: Surface }[] = SURFACES.map((surface) => ({ surface }));
 
-const COLLAPSED_LINE_PRESETS = [1, 3, 5, 10];
+const COLLAPSED_LINE_PRESETS = [1, 3, 4, 5, 10];
 
 // The collapsed-lines control is a row in the panel's selection order (after the Interface
 // tweaks); it is distinguished from tweaks by identity rather than by a tweak-shaped stub.

@@ -37,20 +37,13 @@ export function cappedRenderPayload<T>(value: T): T | undefined {
 	return bytes > MAX_RENDER_BYTES ? undefined : value;
 }
 
-/** Keep the full row budget for content; sequential lines with [...] on the last line. */
-export function collapseTextLines(
-	lines: string[],
-	limit: number,
-	expanded: boolean,
-	options: { marker?: string | (() => string) } = {},
-): string[] {
-	const count = Math.max(1, Math.floor(limit));
-	if (expanded || lines.length <= count) return lines;
-	const marker = typeof options.marker === "function" ? options.marker() : (options.marker ?? "[...]");
-	const shown = lines.slice(0, count);
-	const last = shown[shown.length - 1];
-	shown[shown.length - 1] = last.trimEnd() ? `${last.trimEnd()} ${marker}` : marker;
-	return shown;
+/** Keep a bounded preview while retaining every line when the host requests expansion. */
+export function collapseTextLines(lines: string[], limit: number, expanded: boolean): string[] {
+	if (expanded || lines.length <= limit) return lines;
+	if (limit <= 1) return [`${lines[0] ?? ""} …`];
+	if (limit < 3) return [...lines.slice(0, limit - 1), `… ${lines.length - (limit - 1)} more`];
+	const head = limit - 2;
+	return [...lines.slice(0, head), `… ${lines.length - head - 1} more`, lines[lines.length - 1]];
 }
 
 /**

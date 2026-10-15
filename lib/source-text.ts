@@ -147,6 +147,53 @@ export function stripLineNumbers(text: string, minRun = MIN_RUN): { text: string
 	return { text: rows.map((row, index) => gutter[index] ? row.replace(NUMBERED_LINE, "") : row).join("\n"), numbered: true };
 }
 
+const GREP_MATCH_ROW = /^([^\s:][^:\r\n]*?):(\d+):(.*)$/;
+
+function isGrepPath(path: string): boolean {
+	return /[/.]/.test(path) && !/\s/.test(path) && !path.includes("://");
+}
+
+/**
+ * `grep -rn` / `rg -n` output with the repeated `path:line:` prefix lifted into one `path`
+ * header per file. Rows keep their text and indentation exactly; the line number goes with
+ * the prefix (as {@link stripLineNumbers} does), `--` group separators become `…`, and
+ * `path-line-text` context rows are folded in only for a path that has a match row. Output
+ * that is not mostly prefixed rows (URLs, prose with a colon) is returned untouched.
+ */
+export function groupGrepPrefixes(text: string): { text: string; grouped: boolean } {
+	const rows = text.split("\n");
+	const content = rows.filter(row => row.trim() !== "" && row !== "--");
+	const matches = content.map(row => GREP_MATCH_ROW.exec(row)).filter((m): m is RegExpExecArray => m !== null && isGrepPath(m[1]));
+	if (matches.length === 0 || matches.length * 2 < content.length) return { text, grouped: false };
+	const paths = [...new Set(matches.map(m => m[1]))].sort((a, b) => b.length - a.length);
+	const out: string[] = [];
+	let current: string | undefined;
+	const open = (path: string) => {
+		if (path === current) return;
+		if (current !== undefined) out.push("");
+		out.push(path);
+		current = path;
+	};
+	for (const row of rows) {
+		const match = GREP_MATCH_ROW.exec(row);
+		if (match && isGrepPath(match[1])) {
+			open(match[1]);
+			out.push(match[3]);
+			continue;
+		}
+		if (row === "--") { out.push("…"); continue; }
+		const context = paths.map(path => row.startsWith(`${path}-`) ? /^(\d+)-(.*)$/.exec(row.slice(path.length + 1)) : null);
+		const index = context.findIndex(found => found !== null);
+		if (index >= 0) {
+			open(paths[index]);
+			out.push(context[index]![2]);
+			continue;
+		}
+		out.push(row);
+	}
+	return { text: out.join("\n"), grouped: true };
+}
+
 const SOURCE_TOKEN = /(?:^|[\s"'=<>(])((?:~\/|\.{0,2}\/)?[\w@.+/-]*\.([A-Za-z0-9]+))(?=$|[\s"'|&;:)<>])/g;
 
 /** The last source file a shell command names (`sed -n 1,5p src/a.ts`), whose text it prints. */
@@ -154,4 +201,104 @@ export function commandSourcePath(command: string): string | undefined {
 	let found: string | undefined;
 	for (const match of command.matchAll(SOURCE_TOKEN)) if (hasCommentStyle(match[2])) found = match[1];
 	return found;
+}
+
+const BRACE_LANGUAGES = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "rs", "go", "c", "h", "cc", "cpp", "hpp", "cs", "java", "kt", "kts", "swift", "scala", "dart", "php", "zig"]);
+
+/** Whether {@link compactBlocks} knows how to fold this language's blocks. */
+export function isBraceLanguage(ext: string | undefined): boolean {
+	return ext !== undefined && BRACE_LANGUAGES.has(ext.toLowerCase());
+}
+
+function bracketDelta(line: string, singleQuotes: boolean): number {
+	const bare = line.replace(singleQuotes ? /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`/g : /"(?:\\.|[^"\\])*"|`[^`]*`/g, "");
+	let depth = 0;
+	for (const ch of bare) {
+		if (ch === "{" || ch === "(" || ch === "[") depth++;
+		else if (ch === "}" || ch === ")" || ch === "]") depth--;
+	}
+	return depth;
+}
+
+/** A row of only closing parens or brackets, optionally after a closing quote, and trailing `;`/`,`: `)`, `);`, `");`, `'),`. A row with a brace is left alone. */
+const LONE_CLOSER = /^\s*["'`]*[)\]][)\];,]*\s*$/;
+
+/**
+ * Rows of one block as a single line. Words are separated by a space, except that nothing pads the
+ * inside of `[`/`(` or `]`/`)`, and a trailing comma before a closing `]`/`)` is dropped:
+ * `[`, `x,`, `y,`, `]` becomes `[x, y]`. Only the seams between rows are touched, never row text.
+ */
+function joinRows(block: string[]): string {
+	let acc = "";
+	for (const part of block.map(p => p.trim()).filter(Boolean)) {
+		const closes = part[0] === "]" || part[0] === ")";
+		if (closes) acc = acc.replace(/,$/, "");
+		const tight = acc === "" || /[[(]$/.test(acc) || closes;
+		acc += tight ? part : ` ${part}`;
+	}
+	return acc;
+}
+
+const EMPTY_PAIRS: Record<string, string> = { "[": "]", "(": ")", "{": "}" };
+
+/** A row that only closes: brackets, braces, quotes and trailing `;`/`,`. Used for empty pairs. */
+const CLOSING_ROW = /^[)\]}"'`;,]+$/;
+
+/**
+ * Rows holding nothing but a closing paren or bracket are appended to the row above, so a call
+ * whose arguments were too wide to join ends `...\n  run(x);` rather than leaving `)` alone on a
+ * line. An empty pair (`[` then `]`, `(` then `)`, `{` then `}`) becomes `[]`. Any other bare `}`
+ * keeps its own row, and a closer after a blank row stays where it is.
+ */
+export function joinLoneClosers(code: string): string {
+	const out: string[] = [];
+	for (const row of code.split("\n")) {
+		const last = out.length > 0 ? out[out.length - 1].trimEnd() : "";
+		const closer = EMPTY_PAIRS[last.slice(-1)];
+		const emptyPair = closer !== undefined && CLOSING_ROW.test(row.trim()) && row.trim().startsWith(closer);
+		if (last !== "" && (emptyPair || LONE_CLOSER.test(row))) {
+			out[out.length - 1] = last + row.trim();
+		} else {
+			out.push(row);
+		}
+	}
+	return out.join("\n");
+}
+
+/**
+ * Source made shorter for a card: the shared indent is dropped, and any bracketed block that
+ * fits `maxWidth` once its lines are joined becomes one row (`try { a(); } catch { b(); }`).
+ * A block too wide for one row keeps its opener and closer and folds what is inside. Blank
+ * lines and bracket-free lines pass through. Only for brace languages; `code` is left alone
+ * when it cannot be folded safely.
+ */
+export function compactBlocks(code: string, { maxWidth = 100, singleQuotes = true } = {}): string {
+	const lines = code.split("\n");
+	const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
+	const indented = lines.filter(line => line.trim() !== "");
+	if (indented.length === 0) return code;
+	const common = Math.min(...indented.map(indentOf));
+	const dedented = lines.map(line => line.slice(Math.min(common, indentOf(line))));
+
+	const fold = (rows: string[]): string[] => {
+		const out: string[] = [];
+		for (let i = 0; i < rows.length; i++) {
+			const row = rows[i];
+			let depth = bracketDelta(row, singleQuotes);
+			if (row.trim() === "" || depth <= 0) { out.push(row); continue; }
+			let end = i;
+			while (depth > 0 && end + 1 < rows.length) depth += bracketDelta(rows[++end], singleQuotes);
+			if (depth !== 0) { out.push(row); continue; }
+			const block = rows.slice(i, end + 1);
+			const joined = `${row.slice(0, indentOf(row))}${joinRows(block)}`;
+			if (joined.length <= maxWidth && block.length <= 12) {
+				out.push(joined);
+			} else {
+				out.push(row, ...fold(block.slice(1, -1)), block[block.length - 1]);
+			}
+			i = end;
+		}
+		return out;
+	};
+	return joinLoneClosers(fold(dedented).join("\n"));
 }

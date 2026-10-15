@@ -66,10 +66,8 @@ function count(text: string, char: string): number {
 }
 
 function isDeclarationSignature(signature: string): boolean {
-	if (!signature) return false;
-	const testMatch = TEST_BLOCK_START.exec(signature);
-	if (testMatch) return true;
-	if (CONTROL_START.test(signature) || CALL_LITERAL_END.test(signature)) return false;
+	if (TEST_CALL.test(signature) && signature.endsWith(")")) return true;
+	if (!signature || CONTROL_START.test(signature) || CALL_LITERAL_END.test(signature)) return false;
 	if (count(signature, ")") !== count(signature, "(") || count(signature, "]") !== count(signature, "[")) return false;
 	return DECLARATION_START.test(signature);
 }
@@ -90,8 +88,15 @@ interface Signature {
 	endLine: number;
 }
 
+// `test("title", () => {` is a call, not a declaration, but in a test file the title is the
+// useful outline row: the whole signature is reduced to `test("title")`.
+const TEST_CALL = /^((?:test|it|describe|suite|context|specify|bench)(?:\.\w+)*)\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`)/;
+
 function collapseSignature(lines: string[], top: number, bottom: number): string {
-	return lines.slice(top - 1, bottom).map(line => line.trim()).join(" ").replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/,?\s+\)/g, ")")
+	const joined = lines.slice(top - 1, bottom).map(line => line.trim()).join(" ").replace(/\s+/g, " ");
+	const testCall = TEST_CALL.exec(joined);
+	if (testCall) return `${testCall[1]}(${testCall[2]})`;
+	return joined.replace(/\(\s+/g, "(").replace(/,?\s+\)/g, ")")
 		.replace(/\s*(?:\{|:|=>\s*\{|=\s*\{|=\s*\[)\s*$/, "")
 		.replace(/^((?:export\s+|default\s+|async\s+)*)function\*?\s+/, "$1fn ")
 		.trim();
@@ -465,7 +470,7 @@ export function renderRange(outline: Outline, lines: string[], start: number, en
 	if (hiddenBefore > 0) rows.push(`${indent}⋯${hiddenBefore}`);
 	const excerpt = lines.slice(start - 1, end).filter((_, offset) => !dropped[start - 1 + offset]);
 	const common = commonIndent(excerpt);
-	excerpt.forEach(line => rows.push(`${indent}${line.slice(common)}`));
+	excerpt.forEach(line => rows.push(`${indent}${line.slice(common).replace(/^\t+/, tabs => "  ".repeat(tabs.length))}`));
 	const hiddenAfter = innermost.bodyEnd - end;
 	if (hiddenAfter > 0) rows[rows.length - 1] += `  ⋯${hiddenAfter}`;
 	if (innermost.endLine > innermost.bodyEnd) rows.push(`${"  ".repeat(innermost.depth + 1)}${lines[innermost.endLine - 1].trim()}`);

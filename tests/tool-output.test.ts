@@ -62,7 +62,7 @@ test("payloads past the render cap are handed to the native card", () => {
 
 test("collapsed tool previews are sequential with [...] on the last line and expansion restores every line", () => {
 	const lines = ["instruction one", "instruction two", "instruction three", "instruction four"];
-	expect(collapseTextLines(lines, 3, false)).toEqual(["instruction one", "instruction two", "instruction three [...]"]);
+	expect(collapseTextLines(lines, 3, false)).toEqual(["instruction one", "… 2 more", "instruction four"]);
 	expect(collapseTextLines(lines, 3, true)).toEqual(lines);
 	expect(collapseTextLines(lines, 1, false)).toEqual(["instruction one [...]"]);
 	expect(collapseTextLines(lines, 2, false)).toEqual(["instruction one", "instruction two [...]"]);

@@ -14,15 +14,16 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 
 ## Tweaks
 
-- **Integrated tool cards.** Results show inside the tool card of OMP.
+- **Integrated tool cards.** Results show inside the tool card of OMP. The tool name is green on success and red on error, with no prefix symbol.
   - Prose reads, Bash output, and Python output collapse to a preview. Ctrl+O shows all.
   - Collapsed previews keep their row budget for content. Sequential lines show from the top, and an inline `[...]` at the end of the last line marks truncation; it never takes a separate row.
   - Reads and writes show the declaration outline. Writes add LSP diagnostics.
+  - File excerpts hide snapshot hashes, numbered gutters and comments; their bracketed path/range label appears only once.
+  - Shell `grep -rn` / `rg -n` rows drop the repeated `path:line:` prefix; matches group under one filename header per file.
   - Edits show the declarations they touched. Ctrl+O shows the changed lines.
   - Background shell commands collapse to one line.
-- **TOON tool results.** Structured results render as TOON in tool cards and model context. Eval unpacks printed JSON-like tool envelopes without executing them. Each cell keeps its source, status, timing, and errors. Oversized or unsupported output stays in the native view.
-  - Read and grep output inside Eval uses the same AST context as direct calls. Range outlines are shown only when the returned lines match the source.
-- **Eval command summaries.** A background tiny-model call adds a short intent summary to each Eval card. It uses `@tiny`, then `@smol`, and skips roles that resolve to the primary model. Calls are cached, limited to two at once, and cancelled after five seconds. Missing models or failures keep the original title; execution never waits for a summary. Disable with `/hydemods eval-command-summaries off`.
+  - `wait` collapses to one status line with job counts and names (for example `✓ Wait · 1 completed GatePoll`). Failures lead and turn red. Ctrl+O shows the full snapshot; the model always gets the full result.
+- **TOON for the model.** The model gets JSON tool results as TOON, a compact table form that uses far fewer tokens. You still see the JSON tree.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
 - **Runaway edit guard.** An `edit` call stops when its input repeats `*** End Patch` three times or passes 96 KB. The agent then retries with small hashline ops.
