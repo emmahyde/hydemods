@@ -28,11 +28,12 @@ import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText } from "./lib/tool-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
+import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { registerHelperDrawers } from "./lib/helper-drawers";
-import { installInternalLinks, linkComponentRows, linkTarget } from "./lib/internal-links";
+import { installInternalLinks, linkComponentRows, linkTarget, uninstallInternalLinks } from "./lib/internal-links";
 import { linkHandlerInstalled, startLinkServer, type LinkServer } from "./lib/link-bridge";
 import { drawerScheme } from "./lib/drawer-types";
 import { randomUUID } from "node:crypto";
@@ -1755,6 +1756,9 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const ensureBackgrounds = () => {
 		if (backgroundsInstalled) return;
 		backgroundsInstalled = true;
+		// The links wrapper sits on top of the backgrounds wrapper and saved it as its original. Peel it
+		// off first, or reinstalling backgrounds leaves the previous generation's closure live.
+		uninstallInternalLinks(AssistantMessageComponent.prototype);
 		installMessageBackgrounds(Object.getPrototypeOf(uiTheme) as ThemeLookups, AssistantMessageComponent.prototype, {
 			hexFor: (surface, light) => resolveBackground(readSetting(BG_SETTINGS[surface].preset), readSetting(BG_SETTINGS[surface].hex), light),
 			liveTheme: () => uiTheme as unknown as ThemeLookups,

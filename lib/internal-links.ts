@@ -55,17 +55,30 @@ type Rows = { render(width: number): readonly string[]; renderTranscriptStableRo
 const INSTALLED = Symbol.for("hydemods.internalLinks");
 
 /**
+ * Restores the renderers `installInternalLinks` wrapped. Call this before reinstalling any wrapper
+ * underneath it (message backgrounds): the links wrapper saved that wrapper as its original, so
+ * uninstalling later would resurrect the stale one and drop the fresh one.
+ */
+export function uninstallInternalLinks(proto: object): void {
+	(proto as Record<symbol, (() => void) | undefined>)[INSTALLED]?.();
+}
+
+/**
  * Wraps a component prototype's row renderers with `linkInternalUrls`. `target` returning undefined
  * (no handler installed, links off) leaves rows untouched. Reinstalling restores the previous
  * originals first so wrappers never stack across extension reloads.
  */
-export function installInternalLinks(proto: Rows, target: () => ((uri: string) => string) | undefined): () => void {
+export function installInternalLinks(
+	proto: Rows,
+	target: () => ((uri: string) => string) | undefined,
+	wrap: (uri: string, text: string) => string = uriHyperlink,
+): () => void {
+	uninstallInternalLinks(proto);
 	const holder = proto as unknown as Record<symbol, (() => void) | undefined>;
-	holder[INSTALLED]?.();
 	const originals = { render: proto.render, stable: proto.renderTranscriptStableRows };
 	const link = (rows: readonly string[]) => {
 		const resolve = target();
-		return resolve ? rows.map(row => linkInternalUrls(row, resolve)) : rows;
+		return resolve ? rows.map(row => linkInternalUrls(row, resolve, wrap)) : rows;
 	};
 	proto.render = function(this: Rows, width) { return link(originals.render.call(this, width)); };
 	if (originals.stable) proto.renderTranscriptStableRows = function(this: Rows, count, width) { return link(originals.stable!.call(this, count, width)); };

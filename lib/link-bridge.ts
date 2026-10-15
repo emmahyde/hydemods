@@ -63,9 +63,15 @@ const HANDLER_SCPT = `on open location theURL
 end open location
 `;
 
-/** Shared with the rendering side: links are only drawn when a click has somewhere to go. */
+/**
+ * Shared with the rendering side: links are only drawn when a click has somewhere to go.
+ * Cached: one stat per process, refreshed by `installLinkHandler`. Called from every row render.
+ */
+let handlerInstalled: boolean | undefined;
+
 export function linkHandlerInstalled(): boolean {
-	return process.platform === "darwin" && existsSync(join(HANDLER_APP, "Contents", "Resources", "forward.sh"));
+	handlerInstalled ??= process.platform === "darwin" && existsSync(join(HANDLER_APP, "Contents", "Resources", "forward.sh"));
+	return handlerInstalled;
 }
 
 /**
@@ -87,6 +93,7 @@ export async function installLinkHandler(): Promise<string> {
 	// `defaults` rewrites the plist as binary; LaunchServices reads either, but normalize for readers.
 	await run(["plutil", "-convert", "xml1", `${plist}.plist`]);
 	await run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", HANDLER_APP]);
+	handlerInstalled = true;
 	return HANDLER_APP;
 }
 
