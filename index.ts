@@ -16,8 +16,8 @@ import { getMarkdownTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
-import { readSourceFsPath, renderFallbackToolCard, splitPathAndSel } from "./lib/host-copies";
-import { outlineMarkdown, outlineSource, recoverOldText, renderEditOutline, renderGrepOutline, renderMarkdownOutline, renderOutline, renderRange, type GrepFileMatches, type Outline } from "./lib/code-outline";
+import { readSourceFsPath, renderFallbackToolCard, renderTaskToolCard, splitPathAndSel } from "./lib/host-copies";
+import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
 import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
@@ -1515,11 +1515,14 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 							}
 							return component.render(width);
 						},
-						invalidate() { cachedWidth = -1; component.invalidate?.(); },
-					});
+					}
+					: options;
+				if (name === "task") {
+					const card = renderTaskToolCard(result, options, theme);
+					if (card) return card;
 				}
-				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
-				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
+				return hydemodsResultComponent(name, result, options, theme, args, takeover)
+					?? original.renderResult(result, fallbackOptions, theme, args);
 			},
 		};
 		if (original.describeCall) wrapped.describeCall = (args, options) =>

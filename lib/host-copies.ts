@@ -10,6 +10,7 @@ import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatOutputPaneLines, plainToolCard, styleToolOutputLine, type StatusLineOptions, type ToolCardPhase } from "@oh-my-pi/pi-tui/render";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { RenderResultOptions } from "@oh-my-pi/pi-tui/tools";
+import { taskCardBody, type TaskDetails } from "./task-card";
 
 /* ------------------------- packages/tui/src/tools/read.ts ------------------------- */
 
@@ -110,6 +111,36 @@ export function renderFallbackToolCard(input: FallbackToolRenderInput, uiTheme: 
     }
    }
    return { status, phase, body };
+  },
+  { paddingX: 1, paddingY: 1, ignoreTight: true },
+ );
+}
+
+/**
+ * The `task` tool card with hydemods' compact agent rows, or undefined when OMP's own renderer should
+ * draw it (expanded, review findings, nested trees, no agents yet).
+ */
+export function renderTaskToolCard(
+ result: { details?: unknown; isError?: boolean },
+ options: RenderResultOptions & { renderContext?: { nowMs?: number } },
+ uiTheme: Theme,
+) {
+ const nowMs = options.renderContext?.nowMs ?? Date.now();
+ // The body depends on the width the card is drawn at, so it is built inside the card callback.
+ const probe = taskCardBody(result.details as TaskDetails | undefined, { expanded: options.expanded, width: 80, nowMs }, uiTheme);
+ if (!probe) return undefined;
+ return plainToolCard(
+  uiTheme,
+  ({ contentWidth }) => {
+   const body = taskCardBody(result.details as TaskDetails | undefined, { expanded: false, width: contentWidth, nowMs }, uiTheme) ?? probe;
+   const failed = body.failed || result.isError === true;
+   const status: StatusLineOptions = {
+    icon: options.isPartial ? (options.spinnerFrame !== undefined ? "running" : "pending") : failed ? "error" : "done",
+    spinnerFrame: options.spinnerFrame,
+    title: "Task",
+   };
+   const phase: ToolCardPhase = options.isPartial ? (options.spinnerFrame !== undefined ? "running" : "partial") : failed ? "error" : "success";
+   return { status, phase, body: body.lines };
   },
   { paddingX: 1, paddingY: 1, ignoreTight: true },
  );
