@@ -22,7 +22,7 @@ import { estimateTokens, formatTokens } from "./lib/tokens";
 import { testSummaryLine } from "./lib/test-summary";
 import { commandSourcePath, compactBlocks, groupGrepPrefixes, isBraceLanguage, joinLoneClosers, printsLineNumbers, extensionOf, scanComments, stripComments, stripLineNumbers } from "./lib/source-text";
 import { presentReadExcerpt } from "./lib/read-display";
-import { outlineSource, recoverOldText, renderEditOutline, renderOutline, renderRange, type Outline } from "./lib/code-outline";
+import { outlineMarkdown, outlineSource, recoverOldText, renderEditOutline, renderGrepOutline, renderMarkdownOutline, renderOutline, renderRange, type GrepFileMatches, type Outline } from "./lib/code-outline";
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
 import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
@@ -1275,26 +1275,27 @@ function readTreeRow(result: ReadResultLike, args: unknown): Omit<ReadTreeRow, "
 	return { header: /^[a-z][a-z0-9+.-]*:\/\//i.test(split.path) ? uiTheme.fg("accent", header) : uiTheme.fg("accent", underlineLabel(header)), prose: text ? text.split(/\r?\n/) : undefined };
 }
 
-// Collapsed outlines keep the first rows and count the rest; expanded shows every row.
+// A read drops blank rows, and a collapsed preview keeps the first rows and ends at a `… N more`
+// row: keeping the last row would leave a lone `}` hanging below the count. Expanded shows all.
+function collapseReadRows(kept: string[], expanded: boolean, limit: number, theme: Theme): string[] {
+	if (expanded || kept.length <= limit) return kept;
+	const shown = Math.max(1, limit - 1);
+	return [...kept.slice(0, shown), theme.fg("muted", `… ${kept.length - shown} more`)];
+}
+
 function outlineRows(outline: string[], expanded: boolean, limit: number, theme: Theme): string[] {
-	const colored = outline.map(line => colorizeOutlineLine(line, theme));
-	return collapseTextLines(colored, limit, expanded, { marker: () => theme.fg("muted", "[...]") });
+	return collapseReadRows(outline.filter(line => line.trim() !== "").map(line => colorizeOutlineLine(line, theme)), expanded, limit, theme);
 }
 
 function proseRows(prose: string[], expanded: boolean, limit: number, theme: Theme): string[] {
-	return collapseTextLines(prose, limit, expanded).map(line => {
+	const colored = prose.filter(line => line.trim() !== "").map(line => {
 		// Check for line-numbered source code output: e.g. "4:describe(...)" or "   4│ const x = 1;"
 		const lineNumbered = /^(\s*\*?\d+[:│])\s*(.*)$/.exec(line);
-		if (lineNumbered) {
-			const num = theme.fg("dim", lineNumbered[1]);
-			const code = colorizeCodeLine(lineNumbered[2], theme);
-			return `${num} ${code}`;
-		}
-		if (/^\[[^\]]+#[0-9a-fA-F]+\]$/.test(line)) {
-			return theme.fg("dim", line);
-		}
+		if (lineNumbered) return `${theme.fg("dim", lineNumbered[1])} ${colorizeCodeLine(lineNumbered[2], theme)}`;
+		if (/^\[[^\]]+#[0-9a-fA-F]+\]$/.test(line)) return theme.fg("dim", line);
 		return colorizeCodeLine(line, theme);
 	});
+	return collapseReadRows(colored, expanded, limit, theme);
 }
 
 // Mirrors pi-tui's usage row, but against the theme handed to the renderer. The
@@ -1623,14 +1624,15 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 							}
 							return component.render(width);
 						},
-					}
-					: options;
-				if (name === "task") {
-					const card = renderTaskToolCard(result, options, theme);
-					if (card) return card;
+					invalidate() { cachedWidth = -1; component.invalidate?.(); },
+				});
 				}
-				return hydemodsResultComponent(name, result, options, theme, args, takeover)
-					?? original.renderResult(result, fallbackOptions, theme, args);
+				if (name === "task") {
+					const taskCard = renderTaskToolCard(result, options, theme);
+					if (taskCard) return taskCard;
+				}
+				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
+				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
 			},
 		};
 		if (original.describeCall) wrapped.describeCall = (args, options) =>

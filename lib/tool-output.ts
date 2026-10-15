@@ -37,8 +37,26 @@ export function cappedRenderPayload<T>(value: T): T | undefined {
 	return bytes > MAX_RENDER_BYTES ? undefined : value;
 }
 
-/** Keep a bounded preview while retaining every line when the host requests expansion. */
-export function collapseTextLines(lines: string[], limit: number, expanded: boolean): string[] {
+/**
+ * Keep a bounded preview while retaining every line when the host requests expansion. By default
+ * the first rows are followed by a `… N more` row and the last row. With `options.marker`, the
+ * full budget goes to content and the marker is appended to the last shown row instead.
+ */
+export function collapseTextLines(
+	lines: string[],
+	limit: number,
+	expanded: boolean,
+	options: { marker?: string | (() => string) } = {},
+): string[] {
+	if (options.marker !== undefined) {
+		const count = Math.max(1, Math.floor(limit));
+		if (expanded || lines.length <= count) return lines;
+		const marker = typeof options.marker === "function" ? options.marker() : options.marker;
+		const shown = lines.slice(0, count);
+		const last = shown[shown.length - 1];
+		shown[shown.length - 1] = last.trimEnd() ? `${last.trimEnd()} ${marker}` : marker;
+		return shown;
+	}
 	if (expanded || lines.length <= limit) return lines;
 	if (limit <= 1) return [`${lines[0] ?? ""} …`];
 	if (limit < 3) return [...lines.slice(0, limit - 1), `… ${lines.length - (limit - 1)} more`];

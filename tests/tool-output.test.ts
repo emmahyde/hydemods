@@ -60,12 +60,12 @@ test("payloads past the render cap are handed to the native card", () => {
 	expect(cappedRenderPayload({ small: true })).toEqual({ small: true });
 });
 
-test("collapsed tool previews are sequential with [...] on the last line and expansion restores every line", () => {
+test("collapsed tool previews count what they hide and expansion restores every line", () => {
 	const lines = ["instruction one", "instruction two", "instruction three", "instruction four"];
 	expect(collapseTextLines(lines, 3, false)).toEqual(["instruction one", "… 2 more", "instruction four"]);
 	expect(collapseTextLines(lines, 3, true)).toEqual(lines);
-	expect(collapseTextLines(lines, 1, false)).toEqual(["instruction one [...]"]);
-	expect(collapseTextLines(lines, 2, false)).toEqual(["instruction one", "instruction two [...]"]);
+	expect(collapseTextLines(lines, 1, false)).toEqual(["instruction one …"]);
+	expect(collapseTextLines(lines, 2, false)).toEqual(["instruction one", "… 3 more"]);
 	expect(collapseTextLines(lines, 4, false)).toEqual(lines);
 });
 
@@ -203,4 +203,10 @@ test("path styling underlines filesystem tokens but not URLs or prose", () => {
 test("plain text path tokens are underlined while URLs remain unchanged", () => {
 	expect(underlinePathTokens("stdout: wrote src/result.json")).toBe("stdout: wrote \x1b[4msrc/result.json\x1b[24m");
 	expect(underlinePathTokens("error: see https://example.test/src/result.json")).toBe("error: see https://example.test/src/result.json");
+});
+
+test("a marker spends the whole budget on content and tags the last shown row", () => {
+	const lines = ["one", "two", "three", "four"];
+	expect(collapseTextLines(lines, 3, false, { marker: "[...]" })).toEqual(["one", "two", "three [...]"]);
+	expect(collapseTextLines(lines, 4, false, { marker: "[...]" })).toEqual(lines);
 });
