@@ -99,6 +99,8 @@ export async function installLinkHandler(): Promise<string> {
 
 async function run(cmd: string[], stdin?: string): Promise<void> {
 	const proc = Bun.spawn(cmd, { stdin: stdin === undefined ? "ignore" : new Blob([stdin]), stdout: "ignore", stderr: "pipe" });
-	const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+	const res = new Response(proc.stderr);
+	const readStderr = async () => (res && "text" in res && typeof res.text === "function" ? await (res.text as () => Promise<string>)() : "");
+	const [code, stderr] = await Promise.all([proc.exited, readStderr()]);
 	if (code !== 0) throw new Error(`${cmd[0]} failed (${code}): ${stderr.trim() || "no output"}`);
 }
