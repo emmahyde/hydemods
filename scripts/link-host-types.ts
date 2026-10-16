@@ -54,10 +54,25 @@ const localAssetsTypes = join(localMonorepo, "types", "assets");
 if (existsSync(localAssetsTypes)) {
 	link("@types/assets", localAssetsTypes);
 } else {
-	// Published @oh-my-pi/* packages do not ship monorepo types/assets; synthesize a minimal stub
-	// so `tsconfig.json`'s `"types": ["bun", "assets"]` resolves on standalone installs.
+	// Published @oh-my-pi/* packages do not ship monorepo types/assets; synthesize the full stub
+	// so `tsconfig.json`'s `"types": ["bun", "assets"]` and any host `.ts` imports resolve cleanly.
 	const stubDir = join(nodeModules, "@types", "assets");
 	rmSync(stubDir, { recursive: true, force: true });
 	mkdirSync(stubDir, { recursive: true });
-	writeFileSync(join(stubDir, "index.d.ts"), 'declare module "*.md" { const s: string; export default s; }\ndeclare module "*.txt" { const s: string; export default s; }\n');
+	const declarations = [
+		'declare module "*.md" { const content: string; export default content; }',
+		'declare module "*.txt" { const content: string; export default content; }',
+		'declare module "*.py" { const content: string; export default content; }',
+		'declare module "*.rb" { const content: string; export default content; }',
+		'declare module "*.jl" { const content: string; export default content; }',
+		'declare module "*.lark" { const content: string; export default content; }',
+		'declare module "*.sh" { const content: string; export default content; }',
+		'declare module "*.applescript" { const content: string; export default content; }',
+		'declare module "*.bdf" { const content: string; export default content; }',
+		'declare module "*.css" { const content: string; export default content; }',
+		'declare module "*/template.js" { const content: string; export default content; }',
+		'declare module "*.generated.js" { const content: string; export default content; }',
+		'declare module "axe-core/axe.min.js" { const content: string; export default content; }',
+	].join("\n") + "\n";
+	writeFileSync(join(stubDir, "index.d.ts"), declarations);
 }
