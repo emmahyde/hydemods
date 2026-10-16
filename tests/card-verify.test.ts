@@ -227,6 +227,17 @@ describe("card verify harness for TOON output", async () => {
 		const item = node as { p?: { text?: string; spans?: Array<{ text?: string }> }; c?: unknown[] };
 		return [item.p?.text ?? "", ...(item.p?.spans ?? []).map(s => s.text ?? ""), ...(item.c ?? []).map(nativeText)].join("\n");
 	}
+	test("JS fold marker renders as a whole row, not an escape split across rows", () => {
+		const code = Array.from({ length: 15 }, (_, i) => `const step${i} = ${i};`).join("\n");
+		const result = { content: [{ type: "text", text: "logged line" }], details: {
+			cells: [{ index: 0, code, language: "js", output: "logged line", status: "complete", exitCode: 0, durationMs: 1 }],
+		}, isError: false };
+		const rendered = toolRenderers.eval.renderResult(result, { expanded: false, isPartial: false }, themeModule.theme, { language: "js", code })!.render(100).join("\n");
+		const rows = plain(rendered).split("\n");
+		expect(rows.some(row => row.includes("[...]"))).toBe(true);
+		expect(rows.some(row => row.includes("\u001b"))).toBe(false);
+	});
+
 	function evalResult(outputs: string[], extra: Record<string, unknown> = {}) {
 		return { content: [{ type: "text", text: outputs.join("\n") }], details: {
 			cells: outputs.map((output, i) => ({ index: i, language: "js", code: "print(await tool.bash({command: 'probe'}))", output, status: i ? "error" : "complete", exitCode: i ? 7 : 0, durationMs: 42 })),

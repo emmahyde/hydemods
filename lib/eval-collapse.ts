@@ -34,7 +34,8 @@ export function compactEvalResult<T extends Result>(result: T, options: Options)
 	const compactCode = (code: string): string => {
 		if (cappedRenderPayload(code) === undefined) return code;
 		const rows = code.split(/\r?\n/);
-		const shown = collapseTextLines(rows, options.limit, false, { marker: () => options.theme.fg("dim", "[...]") });
+		// Plain marker: the host re-formats code for display, and its JS formatter splits an ANSI escape at each `;`.
+		const shown = collapseTextLines(rows, options.limit, false, { marker: () => "[...]" });
 		return shown.map(line => width === undefined ? line : fitCollapseLine(line, width)).join("\n");
 	};
 	const details = result.details as { cells?: Cell[] } | undefined;
