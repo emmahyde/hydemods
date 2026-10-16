@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 
 /**
@@ -40,7 +40,8 @@ const executable = Bun.which("omp");
 if (!executable) throw new Error("Typecheck needs `omp` on PATH; it supplies the @oh-my-pi/* types.");
 const hostDirectory = dirname(realpathSync(executable));
 
-const localMonorepo = join(process.env.HOME || "", "src", "oh-my-pi");
+const home = process.env.HOME || "";
+const localMonorepo = [join(home, "src", "oh-my-pi"), join(home, "projects", "oh-my-pi")].find(dir => existsSync(dir)) ?? join(home, "src", "oh-my-pi");
 const localOhMyPi = join(localMonorepo, "node_modules", "@oh-my-pi");
 const hostOhMyPi = existsSync(localOhMyPi)
 	? localOhMyPi
@@ -50,4 +51,13 @@ link("@toon-format/toon", packageRoot("@toon-format/toon", root));
 link("yaml", packageRoot("yaml", root));
 link("@types/bun", bunTypesRoot());
 const localAssetsTypes = join(localMonorepo, "types", "assets");
-if (existsSync(localAssetsTypes)) link("@types/assets", localAssetsTypes);
+if (existsSync(localAssetsTypes)) {
+	link("@types/assets", localAssetsTypes);
+} else {
+	// Published @oh-my-pi/* packages do not ship monorepo types/assets; synthesize a minimal stub
+	// so `tsconfig.json`'s `"types": ["bun", "assets"]` resolves on standalone installs.
+	const stubDir = join(nodeModules, "@types", "assets");
+	rmSync(stubDir, { recursive: true, force: true });
+	mkdirSync(stubDir, { recursive: true });
+	writeFileSync(join(stubDir, "index.d.ts"), 'declare module "*.md" { const s: string; export default s; }\ndeclare module "*.txt" { const s: string; export default s; }\n');
+}
