@@ -359,4 +359,163 @@ describe("card verify harness for TOON output", async () => {
 		expect(foldedAnsi).not.toContain("Read artifact://7");
 	});
 
+	const sessionListing = [
+		"Sessions across projects, newest first:",
+		"- 019e6a1b7c3d4 · 5m ago · ~/work/alpha · 42 msg · Reconcile ledger exports",
+		"  recap: Fixed the ledger export totals and added a regression check",
+		"- 019e5f20aa91b · 2h ago · ~/work/beta · 7 msg · failed · Probe cache warmup",
+	].join("\n");
+	const sessionDetail = [
+		"Session 019e6a1b7c3d4 · Reconcile ledger exports",
+		"project ~/work/alpha · created 1d ago · active 5m ago · 42 msgs",
+		"file ~/.omp/agent/sessions/alpha/019e6a1b7c3d4.jsonl",
+		"",
+		"Recaps, oldest first:",
+		"- 1d ago: Started tracing the export mismatch",
+		"- 5m ago: Fixed the ledger export totals",
+		"Prompts, oldest first:",
+		"- 1d ago: why do exports disagree with the ledger",
+	].join("\n");
+	const artifactNotice = "[Output truncated. Full output: artifact://77]";
+	function archiveEval(output: string, extra: Record<string, unknown> = {}) {
+		return evalResult([output], extra);
+	}
+	function archiveSurfaces(result: ReturnType<typeof evalResult>, expanded: boolean) {
+		const args = { language: "py", code: "print(archive.sessions())" };
+		const ansi = plain(toolRenderers.eval.renderResult(result, { expanded, isPartial: false }, themeModule.theme, args)!.render(140).join("\n"));
+		const native = plain(toolRenderers.eval.describeResult!(result, { expanded, isPartial: false }, args)!.body!.map((node: unknown) => nativeText(node)).join("\n"));
+		return { ansi, native };
+	}
+
+	test("archive session listings become cards that keep every id, title, recap and status", () => {
+		const result = archiveEval(sessionListing);
+		const snapshot = JSON.stringify(result);
+		for (const text of Object.values(archiveSurfaces(result, true))) {
+			for (const fact of ["019e6a1b7c3d4", "Reconcile ledger exports", "Fixed the ledger export totals", "019e5f20aa91b", "Probe cache warmup", "failed", "42"]) {
+				expect(text).toContain(fact);
+			}
+			expect(text).toContain("entries[2]");
+		}
+		expect(JSON.stringify(result)).toBe(snapshot);
+		// Real card takeover: no native Eval box, no ANSI box border; a hydemods card with a foot instead.
+		const nativeCard = JSON.stringify(view(result));
+		expect(nativeCard).not.toContain("omp.tool.eval.input");
+		expect(nativeCard).not.toContain("omp.run.foot");
+		for (const expanded of [false, true]) {
+			const ansi = plain(toolRenderers.eval.renderResult(result, { expanded, isPartial: false }, themeModule.theme, {})!.render(140).join("\n"));
+			expect(ansi).not.toContain("╭");
+			if (expanded) expect(ansi).toContain("foot: done");
+		}
+		expect(archiveSurfaces(result, true).native).toContain("foot: done");
+	});
+
+	test("archive session detail keeps recaps, prompts and file facts in a card", () => {
+		const result = archiveEval(sessionDetail);
+		for (const text of Object.values(archiveSurfaces(result, true))) {
+			for (const fact of ["019e6a1b7c3d4", "Reconcile ledger exports", "Started tracing the export mismatch", "Fixed the ledger export totals", "why do exports disagree with the ledger", "019e6a1b7c3d4.jsonl"]) {
+				expect(text).toContain(fact);
+			}
+			expect(text).toContain("recaps");
+			expect(text).toContain("prompts");
+		}
+	});
+
+	test("archive cards are built from a cell's textOutput, fold with it, and leave the original untouched", () => {
+		const many = ["Sessions across projects, newest first:"];
+		for (let i = 1; i <= 14; i++) many.push(`- 019e00000${String(i).padStart(4, "0")} · ${i}m ago · ~/work/p${i} · ${i} msg · Task number ${i}`);
+		const result = archiveEval("placeholder");
+		const cell = (result.details as { cells: Array<Record<string, unknown>> }).cells[0];
+		cell.output = "ORIGINAL-OUTPUT-MARKER";
+		cell.textOutput = many.join("\n");
+		const snapshot = JSON.stringify(result);
+		const folded = archiveSurfaces(result, false);
+		const expanded = archiveSurfaces(result, true);
+		expect(folded.ansi).not.toContain("Task number 14");
+		for (const text of Object.values(expanded)) {
+			expect(text).toContain("entries[14]");
+			expect(text).not.toContain("ORIGINAL-OUTPUT-MARKER");
+			for (let i = 1; i <= 14; i++) expect(text).toContain(`Task number ${i}`);
+		}
+		expect(JSON.stringify(result)).toBe(snapshot);
+	});
+
+	test("archive cards preserve code context, mixed prose, failures and artifact notices", () => {
+		const output = ["before archive", sessionListing, "after archive: 2 shown", artifactNotice].join("\n");
+		const result = archiveEval(output);
+		(result.details as { cells: Array<Record<string, unknown>> }).cells[0].code = "print(archive.sessions())\nprint('after archive: 2 shown')";
+		const args = { language: "py", code: "print('args fallback')" };
+		const native = toolRenderers.eval.describeResult!(result, { expanded: true, isPartial: false }, args)!;
+		const text = plain(native.body!.map((node: unknown) => nativeText(node)).join("\n"));
+		for (const fact of ["before archive", "after archive: 2 shown", artifactNotice, "Reconcile ledger exports"]) expect(text).toContain(fact);
+		expect(text).toContain("archive.sessions()");
+		expect(JSON.stringify(native)).not.toContain("omp.tool.eval.input");
+		const ansi = plain(toolRenderers.eval.renderResult(result, { expanded: true, isPartial: false }, themeModule.theme, args)!.render(140).join("\n"));
+		for (const fact of ["before archive", "after archive: 2 shown", artifactNotice, "Reconcile ledger exports", "archive.sessions()"]) expect(ansi).toContain(fact);
+
+		const failing = evalResult(["ok first", sessionListing + "\nArchiveError: no session matches 'zzz'"]);
+		const cells = view(failing).body!;
+		const footTone = (node: unknown): unknown => {
+			const found = (n: unknown): Record<string, unknown> | undefined => {
+				if (!n || typeof n !== "object") return undefined;
+				const item = n as { p?: Record<string, unknown>; c?: unknown[] };
+				if (item.p?.role === "omp.run.state") return item.p;
+				for (const child of item.c ?? []) { const hit = found(child); if (hit) return hit; }
+				return undefined;
+			};
+			return found(node)?.tone;
+		};
+		expect(footTone(cells[1])).toBe("error");
+		expect(footTone(cells[0])).not.toBe("error");
+		const failed = plain(nativeText(cells[1]));
+		expect(failed).toContain("no session matches 'zzz'");
+		expect(failed).toContain("Reconcile ledger exports");
+	});
+
+	test("archive card collapses when folded and restores every record on expansion", () => {
+		const many = ["Sessions across projects, newest first:"];
+		for (let i = 1; i <= 14; i++) many.push(`- 019e00000${String(i).padStart(4, "0")} · ${i}m ago · ~/work/p${i} · ${i} msg · Task number ${i}`);
+		const result = archiveEval(many.join("\n"));
+		const { ansi: folded } = archiveSurfaces(result, false);
+		const { ansi: expanded, native: nativeExpanded } = archiveSurfaces(result, true);
+		expect(folded).not.toContain("Task number 14");
+		const foldedView = toolRenderers.eval.describeResult!(result, { expanded: false, isPartial: false }, { language: "py", code: "print(archive.sessions())" })! as { preview?: { lines?: number } };
+		expect(foldedView.preview?.lines).toBeGreaterThan(0);
+		for (let i = 1; i <= 14; i++) {
+			expect(expanded).toContain(`Task number ${i}`);
+			expect(nativeExpanded).toContain(`Task number ${i}`);
+		}
+	});
+
+	test("archive presentation is skipped while streaming and never executes or alters malformed listings", () => {
+		const streaming = view(archiveEval(sessionListing), true);
+		expect(JSON.stringify(streaming)).toContain("omp.tool.eval.input");
+		expect(plain(nativeText(streaming.body![0]))).toContain("019e6a1b7c3d4");
+		const hostile = "Sessions across projects, newest first:\n- ${process.exit(1)} · 5m ago · (() => { throw 1 })() · 1 msg · $(rm -rf /)";
+		const text = plain(archiveSurfaces(archiveEval(hostile), true).native);
+		expect(text).toContain("$(rm -rf /)");
+		expect(text).toContain("process.exit(1)");
+	});
+
+	test("archive cards leave ordinary bulleted prose and unsettled or failed Eval in the native box", () => {
+		const prose = "Shopping list, newest first:\n- milk · 2 days ago\n- eggs · today";
+		const plainView = view(evalResult([prose]));
+		expect(JSON.stringify(plainView)).toContain("omp.tool.eval.input");
+		expect(plain(nativeText(plainView.body![0]))).toContain("- milk · 2 days ago");
+		expect(plain(nativeText(plainView.body![0]))).toContain("- eggs · today");
+
+		const failed = archiveEval(sessionListing);
+		const cell = (failed.details as { cells: Array<Record<string, unknown>> }).cells[0];
+		cell.status = "error";
+		cell.exitCode = 7;
+		const failedView = view(failed);
+		expect(JSON.stringify(failedView)).toContain("omp.tool.eval.input");
+		expect(JSON.stringify(failedView)).toContain("omp.run.foot");
+		expect(plain(nativeText(failedView.body![0]))).toContain("Reconcile ledger exports");
+		expect(plain(toolRenderers.eval.renderResult(failed, { expanded: true, isPartial: false }, themeModule.theme, {})!.render(140).join("\n"))).not.toContain("foot: done");
+
+		const markdown = archiveEval(sessionListing);
+		(markdown.details as { cells: Array<Record<string, unknown>> }).cells[0].hasMarkdown = true;
+		expect(JSON.stringify(view(markdown))).toContain("omp.tool.eval.input");
+	});
+
 });

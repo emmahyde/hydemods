@@ -54,6 +54,8 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 <img width="1000" alt="Eval TOON output" src="https://github.com/user-attachments/assets/56e8e941-a37b-4fb1-bab3-37bfb4e7272a" />
 <img width="1000" alt="Bash pretty printing" src="https://github.com/user-attachments/assets/17110cea-b94e-4957-b9c5-c31d37fbbf33" />
 
+Eval cells that print `archive` listings or a session detail (sessions, projects, prompts/search, recaps, one session) render them as TOON cards in both the ANSI and native paths; surrounding prose, status and artifact notices are kept, and the model-visible result is unchanged.
+
 ## Agent tools
 
 - **`monitor`.** Runs a named shell command (`zsh -lc`) in the background. Operations: `start`, `list`, `cancel`.

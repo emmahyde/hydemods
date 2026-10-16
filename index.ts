@@ -31,6 +31,7 @@ import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-co
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText, separateGeneratedNoticeFooter, stripGeneratedNoticeFooter } from "./lib/tool-output";
+import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
@@ -609,6 +610,9 @@ function colorizeEditOutlineLine(line: string, theme: ThemeLike): string {
 }
 
 function colorizeStructuredLine(line: string, format: StructuredFormat, theme: ThemeLike): string {
+	// Already coloured by whatever printed it. Tokenising would wrap the digits inside `\x1b[38;2;…m`
+	// and shred the escape itself, leaving bare `38;2;91;192;190m` fragments on screen.
+	if (line.includes("\x1b[")) return line;
 	if (format === "links") return line;
 	if (format === "outline") return colorizeOutlineLine(line, theme);
 	if (format === "edit-outline") return colorizeEditOutlineLine(line, theme);
@@ -1465,13 +1469,30 @@ function evalStructuredValue(value: unknown): StructuredText {
 	return structuredResult(value);
 }
 
+function formatEvalText(value: unknown, theme: Theme): string {
+	const structured = evalStructuredValue(value);
+	return structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
+}
+
+// Archive listings are rendered as data cards; the prose around them keeps its normal treatment.
+function formatEvalArchiveText(raw: string, theme: Theme): string | undefined {
+	const segments = splitArchiveOutput(sanitizeTerminalText(raw));
+	if (!segments.some(segment => segment.kind === "archive")) return undefined;
+	return segments.map(segment => {
+		if (segment.kind === "prose") return segment.text ? formatEvalText(segment.text, theme) : "";
+		const structured = formatJsonOutput(segment.value);
+		const card = structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
+		return segment.text.endsWith("\n") ? card + "\n" : card;
+	}).join("");
+}
+
 function formatEvalPrintedOutput(text: string, theme: Theme): string {
 	const cleaned = stripGeneratedNoticeFooter(text);
 	if (cappedRenderPayload(cleaned) === undefined) return cleaned;
 	return decodeEvalOutput(cleaned).map(part => {
 		try {
-			const structured = evalStructuredValue("value" in part ? part.value : part.raw);
-			return structured.text.split("\n").map(line => colorizeStructuredLine(line, structured.format, theme)).join("\n");
+			if ("value" in part) return formatEvalText(part.value, theme);
+			return formatEvalArchiveText(part.raw, theme) ?? formatEvalText(part.raw, theme);
 		} catch {
 			// Malformed tool metadata must not prevent the original output from being read.
 			return sanitizeTerminalText(part.raw);
@@ -1542,6 +1563,42 @@ function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, 
 		],
 		details: { ...details, ...(cells ? { cells } : {}), ...(formatted ? { jsonOutputs: [] } : {}) },
 	};
+}
+
+type EvalArchiveCell = EvalViewArgs & { output: string; textOutput?: string; hasMarkdown?: boolean; status?: string; exitCode?: number; durationMs?: number; statusEvents?: Array<Record<string, unknown>>; statusEventsElided?: number };
+
+// A settled, successful Eval whose printed output holds archive listings becomes one hydemods card
+// (code, archive data, prose, status, foot) in place of the native cell box. Failed, partial or
+// oversized results return undefined and keep the native box, so errors stay as the host draws them.
+function evalArchiveCard(result: EvalViewResult, partial: boolean, expanded: boolean, takeover: CardTakeover): string | undefined {
+	if (partial || result.isError || !takeover.active()) return undefined;
+	const details = (result.details ?? {}) as { cells?: EvalArchiveCell[]; jsonOutputs?: unknown[] };
+	const cells = details.cells;
+	if (!cells?.length || details.jsonOutputs?.some(value => cappedRenderPayload(value) === undefined)) return undefined;
+	if (cells.some(cell => (cell.status !== undefined && cell.status !== "complete") || (cell.exitCode !== undefined && cell.exitCode !== 0) || cell.hasMarkdown)) return undefined;
+	const outputs = cells.map(cell => cell.textOutput ?? cell.output);
+	if (outputs.some(output => cappedRenderPayload(output) === undefined)) return undefined;
+	const split = outputs.map(output => splitArchiveOutput(sanitizeTerminalText(output)));
+	if (!split.some(segments => segments.some(segment => segment.kind === "archive"))) return undefined;
+	const rows: string[] = [];
+	cells.forEach((cell, index) => {
+		const code = cell.code ?? "";
+		rows.push(`eval: ${takeover.summary?.(cell.language ?? "python", code) ?? cell.title ?? code.split("\n")[0]}`);
+		if (expanded && code) rows.push("code:", ...code.split("\n").map(line => `  ${sanitizeTerminalText(line)}`));
+		for (const segment of split[index]) {
+			const body = segment.kind === "archive" ? formatJsonOutput(segment.value).text : segment.text;
+			rows.push(...body.replace(/\s+$/, "").split("\n").filter(line => line.trim() !== ""));
+		}
+		const hidden = cell.statusEventsElided ?? 0;
+		if (hidden > 0) rows.push(`status: ${hidden} earlier`);
+		for (const event of cell.statusEvents ?? []) {
+			const fields = Object.entries(event).filter(([key, value]) => key !== "op" && key !== "resolvedThinkingLevel" && ["string", "number", "boolean"].includes(typeof value));
+			rows.push(`status: ${sanitizeTerminalText(String(event.op ?? "event"))}${fields.map(([key, value]) => ` ${key}=${sanitizeTerminalText(String(value))}`).join("")}`);
+		}
+		rows.push(`foot: done${cell.exitCode === undefined ? "" : ` · exit ${cell.exitCode}`}${cell.durationMs === undefined ? "" : ` · ${cell.durationMs} ms`}`);
+	});
+	for (const value of details.jsonOutputs ?? []) rows.push(...formatJsonOutput(value).text.split("\n"));
+	return rows.join("\n");
 }
 function hydemodsResultComponent(toolName: string, result: { content: unknown; details?: unknown; isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme, args: unknown, takeover: CardTakeover) {
 	if (!takeover.active()) return undefined;
@@ -1621,6 +1678,12 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 			},
 			renderResult(result, options, theme, args) {
 				if (name === "eval") {
+					const archiveExpanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+					const archiveCard = evalArchiveCard(result, options.isPartial, archiveExpanded, takeover);
+					if (archiveCard !== undefined) {
+						const card = toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName: "eval", result: archiveCard, isError: false, cwd: process.cwd() } }, { expanded: archiveExpanded }, theme, takeover.display, { text: archiveCard, format: "toon" });
+						return takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card;
+					}
 					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
 					const nativeOptions = { ...options, renderContext: {
 						...(options as { renderContext?: object }).renderContext,
@@ -1663,6 +1726,13 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 		if (original.describeResult) {
 			wrapped.describeResult = (result, options, args) => {
 				if (name === "eval") {
+					const archiveExpanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
+					const archiveCard = evalArchiveCard(result, options.isPartial, archiveExpanded, takeover);
+					if (archiveCard !== undefined) return {
+						...original.describeResult!(result, options, evalViewArgs(args, takeover)),
+						body: [codeNode(archiveCard, { lang: "yaml" })],
+						preview: { lines: takeover.display.collapsedLines },
+					};
 					const active = takeover.active();
 					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
 					const expanded = context?.expanded ?? options.expanded;
