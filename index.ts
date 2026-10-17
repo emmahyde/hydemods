@@ -8,7 +8,7 @@ import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { summarizeCode } from "@oh-my-pi/pi-natives";
-import type { Usage } from "@oh-my-pi/pi-ai";
+import { completeSimple, type Usage } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme as uiTheme } from "@oh-my-pi/pi-tui/theme";
 import { fileHyperlink, previewWindowRows } from "@oh-my-pi/pi-tui/render";
@@ -34,9 +34,11 @@ import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOut
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
+import { TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
+import { ToolRows } from "./lib/tool-rows-host";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
-import { booleanSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
+import { booleanSetting, enumSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { registerHelperDrawers } from "./lib/helper-drawers";
 import { installInternalLinks, linkComponentRows, linkTarget, uninstallInternalLinks } from "./lib/internal-links";
@@ -225,6 +227,23 @@ const collapsedLinesSetting = integerSetting(
 	"Collapsed tool card lines",
 	"Content rows shown in a collapsed tool card; an inline glyph marks the hidden rows.",
 	DEFAULT_COLLAPSED_LINES,
+);
+
+const toolRowsSetting = enumSetting(
+	"tool-rows",
+	"Tool rows",
+	"How tool calls draw. cards: OMP's tool cards. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. Ctrl+O shows the cards.",
+	TOOL_ROWS_MODES,
+	"lines",
+);
+const toolRowsModelSetting = stringSetting(
+	"tool-rows-model",
+	"Tool rows model",
+	"Local model (see `omp tiny-models`) that writes tool row lines. It runs on the Apple GPU when providers.tinyModelDevice is mlx.",
+	"llama3.2:3b",
+	value => {
+		if (!value.trim()) throw new Error("hydemods.toolRowsModel must name a local model");
+	},
 );
 
 type ToolDisplayState = { collapsedLines: number; cardsOn: boolean };
@@ -1178,8 +1197,11 @@ type ReadGroupState = {
 // path. Reads without an outline keep a bare path row; the group draws itself while any read is
 // still pending. The class must come from `@oh-my-pi/pi-tui`: only host-mapped specifiers share
 // the running instance, and a deeper import would patch a private copy.
+// What each grouped read block was told, recorded by the takeover below; tool rows read it too.
+const readGroupStates = new WeakMap<ReadToolGroupComponent, ReadGroupState>();
+
 function installReadGroupTakeover(takeover: CardTakeover): void {
-	const states = new WeakMap<ReadToolGroupComponent, ReadGroupState>();
+	const states = readGroupStates;
 	const stateOf = (group: ReadToolGroupComponent): ReadGroupState => {
 		let state = states.get(group);
 		if (!state) {
@@ -1456,10 +1478,12 @@ function evalStructuredValue(value: unknown): StructuredText {
 				else break;
 			}
 			if (!numbers.some(n => n !== null)) return block;
-			const outline = readOutlineStructured({ content: [], details: {
-				resolvedPath: header[1], truncation: { truncated: true },
-				displayContent: { text: sourceLines.join("\n"), startLine: numbers.find(n => n !== null), lineNumbers: numbers },
-			} }, { path: header[1] });
+			const outline = readOutlineStructured({
+				content: [], details: {
+					resolvedPath: header[1], truncation: { truncated: true },
+					displayContent: { text: sourceLines.join("\n"), startLine: numbers.find(n => n !== null), lineNumbers: numbers },
+				}
+			}, { path: header[1] });
 			if (!outline) return block;
 			changed = true;
 			return outline.text + "\n" + lines.slice(at).join("\n");
@@ -1550,13 +1574,15 @@ function evalViewResult(result: EvalViewResult, partial: boolean, theme: Theme, 
 		const extra = index === details.cells!.length - 1 ? formatted?.json : undefined;
 		const baseOutput = formatted?.cells?.[index] ?? (details.jsonOutputs?.length && cell.textOutput !== undefined ? cell.textOutput : cell.output);
 		const combinedOutput = [baseOutput, extra].filter(Boolean).join("\n\n");
-		return { ...cell, title: summary ?? cell.title,
+		return {
+			...cell, title: summary ?? cell.title,
 			output: combinedOutput,
 			...(cell.textOutput !== undefined ? { textOutput: combinedOutput } : {}),
 		};
 	});
 	const output = formatted && !cells?.length ? [formatted.output, formatted.json].filter(Boolean).join("\n\n") : undefined;
-	return { ...result,
+	return {
+		...result,
 		content: output === undefined ? result.content : [
 			{ type: "text", text: output },
 			...(Array.isArray(result.content) ? result.content.filter(item => item.type !== "text") : []),
@@ -1685,10 +1711,12 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 						return takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card;
 					}
 					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
-					const nativeOptions = { ...options, renderContext: {
-						...(options as { renderContext?: object }).renderContext,
-						previewLines: takeover.display.collapsedLines,
-					} };
+					const nativeOptions = {
+						...options, renderContext: {
+							...(options as { renderContext?: object }).renderContext,
+							previewLines: takeover.display.collapsedLines,
+						}
+					};
 					const active = takeover.active();
 					const formatted = active ? evalViewResult(result, options.isPartial, theme, takeover) : result;
 					const expanded = (options as { renderContext?: { expanded?: boolean } }).renderContext?.expanded ?? options.expanded;
@@ -1708,8 +1736,8 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 							}
 							return component.render(width);
 						},
-					invalidate() { cachedWidth = -1; component.invalidate?.(); },
-				});
+						invalidate() { cachedWidth = -1; component.invalidate?.(); },
+					});
 				}
 				if (name === "task") {
 					const taskCard = renderTaskToolCard(result, options, theme);
@@ -2028,6 +2056,49 @@ export default function hydemods(pi: ExtensionAPI): void {
 	};
 	installNativeCardTakeover(takeover);
 	installReadGroupTakeover(takeover);
+
+	// Tool rows: one line per call, or one per burst, written by a local model.
+	const liveCalls = new Map<string, { name: string; args: unknown }>();
+	let scannedEntries = -1;
+	const lookupCall = (id: string) => {
+		const known = liveCalls.get(id);
+		if (known || !lastCtx) return known;
+		const entries = lastCtx.sessionManager.getEntries();
+		if (entries.length === scannedEntries) return undefined;
+		scannedEntries = entries.length;
+		for (const entry of entries) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			for (const block of entry.message.content) {
+				if (block.type === "toolCall") liveCalls.set(block.id, { name: block.name, args: block.arguments });
+			}
+		}
+		return liveCalls.get(id);
+	};
+	const localLine: Complete = async (system, prompt, signal) => {
+		const model = lastCtx?.modelRegistry.find("local", readSetting(toolRowsModelSetting).trim());
+		if (!model) return undefined;
+		const response = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { signal, maxTokens: 40 });
+		if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
+		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
+	};
+	const toolRows = new ToolRows({
+		mode: () => readSetting(toolRowsSetting),
+		expanded: () => (lastCtx?.hasUI ? lastCtx.ui.getToolsExpanded() : false),
+		theme: () => uiTheme,
+		complete: localLine,
+		repaint: () => { if (lastCtx) repaintToolCards(lastCtx); },
+		readEntries: group => readGroupStates.get(group)?.entries,
+		lookupCall,
+	});
+	toolRows.install();
+	watchSetting(toolRowsSetting, () => toolRows.refresh());
+	watchSetting(toolRowsModelSetting, () => toolRows.reset());
+	pi.on("tool_execution_start", event => {
+		liveCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
+		toolRows.noteCall(event.toolCallId);
+	});
+	pi.on("agent_start", () => toolRows.setIdle(false));
+	pi.on("agent_end", () => toolRows.setIdle(true));
 	// When hydemods tool cards are active, OMP's inline read previews are redundant and
 	// clash with hydemods' read cards. Override it off while active; clear override when off.
 	const syncReadPreviewMapping = () => {
@@ -2050,6 +2121,14 @@ export default function hydemods(pi: ExtensionAPI): void {
 	};
 	pi.registerShortcut("super+alt+o", { description: "Toggle hydemods tool cards", handler: toggleCards });
 	pi.registerShortcut("ctrl+alt+o", { description: "Toggle hydemods tool cards (terminals without Cmd reporting)", handler: toggleCards });
+	const cycleToolRows = (ctx: ExtensionContext) => {
+		if (!isSettingsInitialized()) return;
+		const current = readSetting(toolRowsSetting);
+		const next = TOOL_ROWS_MODES[(TOOL_ROWS_MODES.indexOf(current) + 1) % TOOL_ROWS_MODES.length];
+		toolRowsSetting.set(settings, next);
+		if (ctx.hasUI) ctx.ui.notify(`Tool rows: ${TOOL_ROWS_MODES.map((mode) => (mode === next ? `[${mode}]` : mode)).join(" · ")}`, "info");
+	};
+	pi.registerShortcut("alt+o", { description: "Cycle hydemods tool rows (cards → lines → group)", handler: cycleToolRows });
 
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
@@ -2214,8 +2293,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 					},
 				};
 			},
-			{ placement: "belowEditor" },
+			{ placement: "aboveEditor" },
 		);
+		// Widgets stack in insertion order; re-adding the drawer keeps the thought panel on top.
+		refreshLastPromptDrawer(ctx);
 	};
 
 	const noteThought = (message: { role?: unknown; content?: unknown }) => {
@@ -2228,6 +2309,13 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("message_update", (event, ctx) => {
 		noteThought(event.message);
 		guardRunawayEdit(event.message, ctx);
+		if (event.message.role === "assistant") {
+			for (const block of event.message.content) {
+				if (block.type !== "toolCall") continue;
+				liveCalls.set(block.id, { name: block.name, args: block.arguments });
+				toolRows.noteCall(block.id);
+			}
+		}
 	});
 	pi.on("agent_start", () => {
 		latestThought = "";
@@ -2647,6 +2735,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// One handler per session event, each running the per-feature session work in a fixed order.
 	const onSession = (_event: unknown, ctx: ExtensionContext) => {
 		evalSummaries.clear();
+		liveCalls.clear();
+		scannedEntries = -1;
+		toolRows.reset();
+		toolRows.setIdle(true);
 		stopStallWatch?.();
 		stopStallWatch = undefined;
 		const sessionFile = ctx.sessionManager.getSessionFile();

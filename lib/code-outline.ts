@@ -190,6 +190,7 @@ function declarationsFromBodies(lines: string[], bodies: Array<{ start: number; 
 	return declarations;
 }
 
+// Direct children only; `populate` walks further down.
 function childDeclarations(lines: string[], parent: Declaration, lang: string, summarize: Summarize): Declaration[] {
 	if (parent.depth + 1 >= MAX_DEPTH || parent.bodyEnd - parent.bodyStart < 3) return [];
 	const raw = lines.slice(parent.line - 1, parent.endLine);
@@ -209,9 +210,50 @@ function childDeclarations(lines: string[], parent: Declaration, lang: string, s
 	const bodies = elidedRanges(opened)
 		.map(range => ({ start: range.start + offset, end: range.end + offset }))
 		.filter(range => range.start > parent.bodyStart - 1 && range.end <= parent.bodyEnd && !(range.start === parent.bodyStart && range.end === parent.bodyEnd));
-	const children = declarationsFromBodies(lines, bodies, parent.depth + 1, lang, parent.line).filter(child => child.line > parent.line && child.endLine <= parent.endLine);
-	for (const child of children) child.children = childDeclarations(lines, child, lang, summarize);
-	return children;
+	return declarationsFromBodies(lines, bodies, parent.depth + 1, lang, parent.line).filter(child => child.line > parent.line && child.endLine <= parent.endLine);
+}
+
+// A namespace whose body is one nested module or class (`module Webhooks` / `module Adapters` /
+// `class Github < Base`) is only a name prefix, so the chain becomes one row,
+// `class Webhooks::Adapters::Github < Base`, and the freed depth goes to the class's members.
+const NAMESPACE = /^(?:(?:export|declare)\s+)*(?:module|namespace)\s+([A-Za-z_$][\w$:.]*)$/;
+const CONTAINER = /^((?:(?:export|declare|abstract)\s+)*)(class|module|namespace)\s+([A-Za-z_$][\w$:.]*)(.*)$/;
+const SCOPE_SEPARATOR: Record<string, string> = { ruby: "::", cpp: "::" };
+
+// True when nothing but blanks, comments and the closer sits in `outer` around `inner`.
+function onlyWraps(lines: string[], outer: Declaration, inner: Declaration): boolean {
+	for (let line = outer.bodyStart; line <= outer.endLine; line++) {
+		if (line >= inner.line && line <= inner.endLine) continue;
+		const text = lines[line - 1] ?? "";
+		if (!text.trim() || COMMENT_ONLY.test(text)) continue;
+		if (line === outer.endLine && /^(?:end\b|\})/.test(text.trim())) continue;
+		return false;
+	}
+	return true;
+}
+
+// The merged row keeps the inner declaration's lines, since its children are found by
+// re-summarizing exactly its slice; only the outer depth and the qualified name carry over.
+function mergeNamespace(outer: Declaration, inner: Declaration, lang: string): Declaration | undefined {
+	const namespace = NAMESPACE.exec(outer.signature);
+	const container = CONTAINER.exec(inner.signature);
+	if (!namespace || !container) return undefined;
+	const [, modifiers, keyword, name, rest] = container;
+	const signature = `${modifiers}${keyword} ${namespace[1]}${SCOPE_SEPARATOR[lang] ?? "."}${name}${rest}`;
+	return { ...inner, depth: outer.depth, signature, children: [] };
+}
+
+function populate(lines: string[], declaration: Declaration, lang: string, summarize: Summarize): Declaration {
+	let current = declaration;
+	let children = childDeclarations(lines, current, lang, summarize);
+	for (; ;) {
+		const merged = children.length === 1 && onlyWraps(lines, current, children[0]) ? mergeNamespace(current, children[0], lang) : undefined;
+		if (!merged) break;
+		current = merged;
+		children = childDeclarations(lines, current, lang, summarize);
+	}
+	current.children = children.map(child => populate(lines, child, lang, summarize));
+	return current;
 }
 
 /** Declaration tree of one source file, or undefined when tree-sitter cannot parse it. */
@@ -219,10 +261,10 @@ export function outlineSource(code: string, source: { path?: string; lang?: stri
 	if (!code.trim()) return undefined;
 	const summary = summarize({ code, path: source.path, lang: source.lang, minBodyLines: 2, minCommentLines: NO_COMMENT_ELISION });
 	if (!summary.parsed || !summary.language) return undefined;
+	const language = summary.language;
 	const lines = code.split(/\r?\n/);
-	const declarations = declarationsFromBodies(lines, elidedRanges(summary), 0, summary.language);
-	for (const declaration of declarations) declaration.children = childDeclarations(lines, declaration, summary.language, summarize);
-	return { language: summary.language, totalLines: lines.length, declarations };
+	const declarations = declarationsFromBodies(lines, elidedRanges(summary), 0, language).map(declaration => populate(lines, declaration, language, summarize));
+	return { language, totalLines: lines.length, declarations };
 }
 
 export function flattenDeclarations(declarations: Declaration[]): Declaration[] {

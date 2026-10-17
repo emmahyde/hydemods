@@ -21,7 +21,7 @@ type Entry = {
 	timer?: Timer;
 };
 
-function stripControls(text: string): string {
+export function stripControls(text: string): string {
 	return text
 		// OSC, DCS/SOS/PM/APC, CSI, and single escape sequences (including C1 forms).
 		.replace(/(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)/g, "")

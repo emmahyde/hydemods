@@ -102,13 +102,13 @@ describe("card verify harness for TOON output", async () => {
 			content: [
 				{
 					type: "text",
-					text: "[lib/code-outline.ts#1234]\n251: export function renderOutline(outline: Outline, label: string): string[] {\n255: \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n"
+					text: "[lib/code-outline.ts#1234]\n293: export function renderOutline(outline: Outline, label: string): string[] {\n297: \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n"
 				}
 			],
 			details: {
 				cwd: process.cwd(),
 				scopePath: "lib/code-outline.ts",
-				displayContent: "   251│ export function renderOutline(outline: Outline, label: string): string[] {\n * 255│ \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n",
+				displayContent: "   293│ export function renderOutline(outline: Outline, label: string): string[] {\n * 297│ \t\t`${label} · ${outline.language} · ${outline.totalLines} lines · ${count} decl${count === 1 ? \"\" : \"s\"}`,\n",
 				matchCount: 2,
 				fileCount: 1,
 				files: ["lib/code-outline.ts"]
@@ -127,7 +127,7 @@ describe("card verify harness for TOON output", async () => {
 		const plain = renderedAnsi.replace(/\u001b\[[0-9;]*m/g, "");
 		// Check that the enclosing function declaration is rendered above or alongside matches
 		expect(plain).toContain("renderOutline");
-		expect(plain).toContain("255");
+		expect(plain).toContain("297");
 	});
 	test("multi-file grep with markdown headers and context rows filters context and enriches with AST", () => {
 		const grepRenderer = toolRenderers.grep;
@@ -140,8 +140,8 @@ describe("card verify harness for TOON output", async () => {
 					type: "text",
 					text: `# lib/
 ## code-outline.ts#52B3
- 251:export function renderOutline(outline: Outline, label: string): string[] {
-*255:\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
+ 293:export function renderOutline(outline: Outline, label: string): string[] {
+*297:\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
  256:\t\t...flat.map(outlineRow),
 `
 				}
@@ -151,8 +151,8 @@ describe("card verify harness for TOON output", async () => {
 				searchPath: process.cwd(),
 				displayContent: `# lib/
 ## code-outline.ts#52B3
- 251│export function renderOutline(outline: Outline, label: string): string[] {
-*255│\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
+ 293│export function renderOutline(outline: Outline, label: string): string[] {
+*297│\t\t\`\${label} · \${outline.language} · \${outline.totalLines} lines · \${count} decl\${count === 1 ? "" : "s"}\`,
     │...
  256│\t\t...flat.map(outlineRow),
 `,
@@ -175,8 +175,8 @@ describe("card verify harness for TOON output", async () => {
 		// 1 match only, context line 240 and 246 omitted from matches, enclosing signature present
 		expect(plain).toContain("1 match");
 		expect(plain).toContain("renderOutline");
-		expect(plain).toContain("255");
-		expect(plain).not.toContain("251:");
+		expect(plain).toContain("297");
+		expect(plain).not.toContain("293:");
 		expect(plain).not.toContain("256:");
 	});
 	test("read toolRenderer renders markdown TOC outline with syntax highlighting", () => {

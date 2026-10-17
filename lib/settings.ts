@@ -58,6 +58,14 @@ export function stringSetting(name: string, label: string, description: string, 
 	});
 }
 
+/** Registers a persisted choice among `values` under `hydemods.<camelName>`; the settings panel cycles it. */
+export function enumSetting<const T extends readonly [string, ...string[]]>(name: string, label: string, description: string, values: T, fallback: T[number]): Setting<T[number]> {
+	const id = settingId(name);
+	const existing = lookup(id);
+	if (existing) return existing as Setting<T[number]>;
+	return register({ id, type: "enum", values, default: fallback, ui: { tab: "tools", label, description } });
+}
+
 /** Current value, or the setting's default before the settings store is initialized. */
 export function readSetting<T>(setting: Setting<T>): T {
 	return isSettingsInitialized() ? setting.get(settings) : (setting.default as T);

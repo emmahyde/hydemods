@@ -17,12 +17,19 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 - **Integrated tool cards.** Results show inside the tool card of OMP. The tool name is green on success and red on error, with no prefix symbol.
   - Prose reads, Bash output, and Python output collapse to a preview. Ctrl+O shows all.
   - Collapsed previews keep their row budget for content. Sequential lines show from the top, and an inline `[...]` at the end of the last line marks truncation; it never takes a separate row.
-  - Reads and writes show the declaration outline. Writes add LSP diagnostics.
+  - Reads and writes show the declaration outline. Writes add LSP diagnostics. Modules or namespaces that only wrap one class fold into its row (`class Shop::Billing::Invoice < Base`), so the class's methods show.
   - File excerpts hide snapshot hashes, numbered gutters and comments; their bracketed path/range label appears only once.
   - Shell `grep -rn` / `rg -n` rows drop the repeated `path:line:` prefix; matches group under one filename header per file.
   - Edits show the declarations they touched. Ctrl+O shows the changed lines.
   - Background shell commands collapse to one line.
   - `wait` collapses to one status line with job counts and names (for example `✓ Wait · 1 completed GatePoll`). Failures lead and turn red. Ctrl+O shows the full snapshot; the model always gets the full result.
+- **Tool rows.** `hydemods.toolRows` in `/settings` (Tools) picks how tool calls draw; Opt+O cycles it (cards → lines → group) and flashes which one is on. Ctrl+O shows the full cards in any mode.
+  - `lines` (default): one row per call, `• Bash · Show recent commits touching db/migrate`, on adjacent rows with no gap. A local model writes each line from the call's arguments; until it lands, the row shows the agent's intent.
+  - `group`: one row per burst of calls. While the agent works it names the latest call; when the agent replies, or you send a message, a local model titles the burst (`• Trace how sessions authenticate users · 7 calls`).
+  - `cards`: OMP's tool cards, unchanged.
+  - A run spans the thinking and harness notices (status lines, reminders, extension messages) between its calls; they hide inside the run. A reply or a prompt ends it.
+  - A run's rows reach scrollback only once the run ends and its lines land (at most 4 seconds after), so scrollback keeps the finished text.
+  - `hydemods.toolRowsModel` names the local model (`omp tiny-models` lists them; default `llama3.2:3b`). Set `providers.tinyModelDevice` to `mlx` to run it on the Apple GPU; otherwise OMP runs it on the CPU. The first line waits for the model to download and load. Call arguments never leave the machine.
 - **TOON for the model.** The model gets JSON tool results as TOON, a compact table form that uses far fewer tokens. You still see the JSON tree.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
