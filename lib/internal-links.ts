@@ -1,5 +1,6 @@
 import { uriHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { DRAWER_SCHEMES } from "./drawer-types";
+import { linkPathRows, type PathResolver } from "./path-links";
 
 /** `hydemods://open?s=<host>&u=<uri>`: the scheme the macOS handler app forwards to the owning OMP process. */
 export const LINK_SCHEME = "hydemods";
@@ -72,14 +73,12 @@ export function installInternalLinks(
 	proto: Rows,
 	target: () => ((uri: string) => string) | undefined,
 	wrap: (uri: string, text: string) => string = uriHyperlink,
+	paths: () => PathResolver | undefined = () => undefined,
 ): () => void {
 	uninstallInternalLinks(proto);
 	const holder = proto as unknown as Record<symbol, (() => void) | undefined>;
 	const originals = { render: proto.render, stable: proto.renderTranscriptStableRows };
-	const link = (rows: readonly string[]) => {
-		const resolve = target();
-		return resolve ? rows.map(row => linkInternalUrls(row, resolve, wrap)) : rows;
-	};
+	const link = (rows: readonly string[]) => linkRows(rows, target(), wrap, paths());
 	proto.render = function(this: Rows, width) { return link(originals.render.call(this, width)); };
 	if (originals.stable) proto.renderTranscriptStableRows = function(this: Rows, count, width) { return link(originals.stable!.call(this, count, width)); };
 	const uninstall = () => {
@@ -92,12 +91,18 @@ export function installInternalLinks(
 }
 
 /** Same as `installInternalLinks` for one component instance (tool cards are built per result). */
-export function linkComponentRows<T extends { render(width: number): readonly string[] }>(component: T, target: () => ((uri: string) => string) | undefined): T {
+export function linkComponentRows<T extends { render(width: number): readonly string[] }>(
+	component: T,
+	target: () => ((uri: string) => string) | undefined,
+	paths: () => PathResolver | undefined = () => undefined,
+): T {
 	const original = component.render.bind(component);
-	component.render = (width: number) => {
-		const resolve = target();
-		const rows = original(width);
-		return resolve ? rows.map(row => linkInternalUrls(row, resolve)) : rows;
-	};
+	component.render = (width: number) => linkRows(original(width), target(), uriHyperlink, paths());
 	return component;
+}
+
+/** Internal URLs first, then filesystem paths; text already inside a link is never relinked. */
+function linkRows(rows: readonly string[], target: ((uri: string) => string) | undefined, wrap: (uri: string, text: string) => string, paths: PathResolver | undefined): readonly string[] {
+	const internal = target ? rows.map(row => linkInternalUrls(row, target, wrap)) : rows;
+	return paths ? linkPathRows(internal, paths) : internal;
 }

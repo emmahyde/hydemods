@@ -3,7 +3,7 @@ import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, trunca
 import { ThoughtPanelLines, thoughtPanelRows } from "./lib/thought-panel";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
-import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
+import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent, UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { installToolRuns, type RunCard } from "./lib/tool-runs";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -51,6 +51,7 @@ import { backgroundAnsi } from "./lib/message-bg";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { registerHelperDrawers } from "./lib/helper-drawers";
 import { installInternalLinks, linkComponentRows, linkTarget, uninstallInternalLinks } from "./lib/internal-links";
+import { createPathResolver } from "./lib/path-links";
 import { linkHandlerInstalled, startLinkServer, type LinkServer } from "./lib/link-bridge";
 import { drawerScheme } from "./lib/drawer-types";
 import { randomUUID } from "node:crypto";
@@ -174,6 +175,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		render: () => "Type a URL and Tab, /browse, or Ctrl+Shift+U. Remote content loads only with Ctrl+F.",
 	},
 	{
+		name: "path-links",
+		title: "Clickable paths",
+		description: "Turns every existing file path in the transcript into a terminal link, including paths in code spans, bare filenames, and paths wrapped across two rows.",
+		category: "Interface",
+		render: () => "Paths resolve against the working directory and ~. Only paths that exist are linked; a :line or #L12 suffix opens at that line.",
+	},
+	{
 		name: "agent-mentions",
 		title: "@@agent mentions",
 		description: "Type @@ to pick a task agent type (the /agents list) with its description inline; the mention tells the agent to delegate to it.",
@@ -240,6 +248,10 @@ const isTweakEnabled = (name: string): boolean => {
 	const tweak = TWEAKS.find(t => t.name === name);
 	return tweak ? readSetting(tweak.setting) : false;
 };
+
+const pathResolver = createPathResolver(() => process.cwd());
+/** Path linker for transcript rows, or undefined while the tweak is off. */
+const pathLinksFor = () => (isTweakEnabled("path-links") ? pathResolver : undefined);
 
 const CATEGORIES: readonly TweakCategory[] = ["Interface", "Colors", "Tools", "Safeguards"];
 
@@ -1747,7 +1759,7 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 					const archiveCard = evalArchiveCard(result, options.isPartial, archiveExpanded, takeover);
 					if (archiveCard !== undefined) {
 						const card = toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName: "eval", result: archiveCard, isError: false, cwd: process.cwd() } }, { expanded: archiveExpanded }, theme, takeover.display, { text: archiveCard, format: "toon" });
-						return takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card;
+						return takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget, pathLinksFor) : card;
 					}
 					const context = (options as { renderContext?: { expanded?: boolean; output?: string } }).renderContext;
 					const nativeOptions = {
@@ -1783,7 +1795,7 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 					if (taskCard) return taskCard;
 				}
 				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
-				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? original.renderResult(result, options, theme, args);
+				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget, pathLinksFor) : card ?? original.renderResult(result, options, theme, args);
 			},
 		};
 		if (original.describeCall) wrapped.describeCall = (args, options) => {
@@ -1844,7 +1856,7 @@ function installNativeCardTakeover(takeover: CardTakeover): void {
 			renderCall: (args, options, theme) => fallback(args, undefined, options, theme),
 			renderResult: (result, options, theme, args) => {
 				const card = hydemodsResultComponent(name, result, options, theme, args, takeover);
-				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget) : card ?? fallback(args, result, options, theme);
+				return card && takeover.linkTarget ? linkComponentRows(card, takeover.linkTarget, pathLinksFor) : card ?? fallback(args, result, options, theme);
 			},
 		};
 	}
@@ -2062,7 +2074,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 				? stylePlainBlocks(rows, width, backgroundAnsi(light ? "#e8ecf1" : "#1f252d", mode), visibleWidth)
 				: rows,
 		});
-		installInternalLinks(AssistantMessageComponent.prototype, () => linkTargetFor());
+		installInternalLinks(AssistantMessageComponent.prototype, () => linkTargetFor(), undefined, pathLinksFor);
+		installInternalLinks(UserMessageComponent.prototype, () => linkTargetFor(), undefined, pathLinksFor);
 	};
 	for (const surface of SURFACES) {
 		for (const setting of [BG_SETTINGS[surface].preset, BG_SETTINGS[surface].hex]) {
