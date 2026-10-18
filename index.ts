@@ -2078,7 +2078,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 	installReadGroupTakeover(takeover);
 
 	// Tool rows: one line per call, or one per burst, written by a local model.
-	const liveCalls = new Map<string, { name: string; args: unknown }>();
+	// Shared by every hydemods instance in the process: a task subagent records its own calls here,
+	// so the UI session's rows can name them and show their intents when the subagent is focused.
+	const callsKey = Symbol.for("hydemods.toolRows.calls");
+	const liveCalls: Map<string, { name: string; args: unknown }> = ((globalThis as Record<symbol, unknown>)[callsKey] ??= new Map()) as Map<string, { name: string; args: unknown }>;
 	let scannedEntries = -1;
 	const lookupCall = (id: string) => {
 		const known = liveCalls.get(id);

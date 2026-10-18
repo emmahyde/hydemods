@@ -626,11 +626,11 @@ export class ToolRows {
 	}
 
 	/**
-	 * The title request for `call`, or undefined when none is asked: a call with an intent shows it
-	 * and never asks; a read waits for its output.
+	 * The title request for `call`, or undefined when none is asked. Every call asks, even one with an
+	 * intent: the intent shows at once and the model line replaces it when it lands. A read waits for its output.
 	 */
 	private callText(call: CallState): CallText | undefined {
-		if (!call.name || call.args === undefined || this.intent(call)) return undefined;
+		if (!call.name || call.args === undefined) return undefined;
 		if (!titlesFromOutput(call.name)) return { name: call.name, args: call.args };
 		if (!call.result || call.partial || call.result.isError) return undefined;
 		return { name: call.name, args: call.args, output: outputText(call.result.content) };
@@ -642,13 +642,12 @@ export class ToolRows {
 	}
 
 	/**
-	 * The call's title without its file: the agent's intent as written, else the model line once it
-	 * lands (`settled`), else the call's main argument. A call with a subject never falls back to its
-	 * raw path or edit script; the subject column shows it.
+	 * The call's title without its file: the model line once it lands (`settled`), else the agent's
+	 * intent as written (also settled, so nothing waits on the model), else the call's main argument.
+	 * A call with a subject never falls back to its raw path or edit script; the subject column shows it.
 	 */
 	private title(call: CallState): { text: string; settled: boolean } {
 		const intent = this.intent(call);
-		if (intent) return { text: intent, settled: true };
 		const text = this.callText(call);
 		const subject = callSubject(call.name ?? "", call.args);
 		if (text && (call.argsComplete || call.result)) {
@@ -659,12 +658,13 @@ export class ToolRows {
 			const labels = [toolLabel(call.name ?? ""), callLabel(call.name ?? "", call.args)];
 			if (line) return { text: withoutLabel(subject ? line.replace(/^\S+\.\w+:\s*/, "") : line, labels), settled: true };
 		}
+		if (intent) return { text: intent, settled: true };
 		return { text: subject ? "" : fallbackLine(call.args), settled: false };
 	}
 
 	private lineSettled(call: CallState, now: number): boolean {
 		const key = this.lineKey(call);
-		if (!key) return true;
+		if (!key || this.intent(call)) return true;
 		if (this.lines.get(key) !== undefined) return true;
 		const asked = this.lines.requested(key);
 		return asked === undefined || now - asked >= HoldMs;

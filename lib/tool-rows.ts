@@ -148,8 +148,9 @@ export function commandName(command: string): string | undefined {
  return name && /^[A-Za-z][\w.+-]*$/.test(name) ? name : undefined;
 }
 
-/** The row's label: a bash call shows the program it runs (`Git`, `Bun`), anything else its tool label. */
+/** The row's label: a bash call shows the program it runs (`Git`, `Bun`), a skill read `Skill`, anything else its tool label. */
 export function callLabel(name: string, args: unknown): string {
+ if (name === "read" && skillName(args)) return "Skill";
  const command = name === "bash" && args && typeof args === "object" ? (args as Record<string, unknown>).command : undefined;
  const program = typeof command === "string" ? commandName(command) : undefined;
  return program ? program[0]!.toUpperCase() + program.slice(1) : toolLabel(name);
@@ -204,6 +205,12 @@ function bareFile(path: string): string {
  return path.length > clean.length ? `${base}/` : base;
 }
 
+/** The skill a `skill://name/…` read loads, or undefined for any other path. */
+function skillName(args: unknown): string | undefined {
+ const path = args && typeof args === "object" ? (args as Record<string, unknown>).path : undefined;
+ return typeof path === "string" ? /^skill:\/\/([^/:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
+}
+
 /**
  * The file a call works on, as `name.ts` or `name.ts:40-80`, or undefined for calls that do not
  * name one. The row draws it from the arguments, so a model title never has to (or gets to) name it.
@@ -211,6 +218,7 @@ function bareFile(path: string): string {
 export function callSubject(name: string, args: unknown): string | undefined {
  if (!args || typeof args !== "object") return undefined;
  const record = args as Record<string, unknown>;
+ if (name === "read" && skillName(args)) return skillName(args);
  if (name === "read" || name === "write") {
   const path = typeof record.path === "string" ? stripControls(record.path).trim() : "";
   if (!path || /^[a-z][\w+.-]*:\/\//i.test(path)) return undefined;
@@ -247,6 +255,7 @@ export const CallSystemPrompt = [
  "Code, config, rule or prompt edit or write: say what the agent is making the program do, never that text was reworded, edited or updated.",
  "README or doc edit: Documenting what the doc now says.",
  "Read with output: say what the agent is learning from the code shown, naming its key functions and what they do. Describe only the code in this output.",
+ "Read of a skill:// path: sum up what the skill teaches the agent to do, from the skill text in the output.",
  "Search: say what the agent is looking for and why. Any other call: say what the agent is doing and on what. Never claim success.",
  "Never copy words from these examples.",
  'Examples: {"tool":"edit","args":{"input":"[rules.yaml#1A2B]\\nPUT 292.=294:\\n+    question: \\"Does this run inline code…\\"\\n+    body: \\"Warning, not a block…\\""}} -> Making inline scratch code warn instead of block.',
@@ -317,6 +326,14 @@ export function cleanLines(text: string, max: number, length = MaxLineLength): s
  if (text.length > 2_000) return undefined;
  const lines = [...new Set(text.split(/\r?\n/).map(line => cleanLine(line, length)).filter((line): line is string => line !== undefined))];
  return lines.length ? lines.slice(0, max).join("\n") : undefined;
+}
+
+/** `lines` without any line the system prompt holds verbatim: a small model sometimes answers with an example's reply. */
+export function withoutCopiedLines(lines: string | undefined, system: string): string | undefined {
+ if (!lines) return lines;
+ const prompt = system.toLowerCase();
+ const kept = lines.split("\n").filter(line => !prompt.includes(line.replace(/…$/, "").toLowerCase()));
+ return kept.length ? kept.join("\n") : undefined;
 }
 
 /* ------------------------------- line cache ------------------------------- */
@@ -397,7 +414,7 @@ export class LineCache {
   let line: string | undefined;
   try {
    const text = await this.complete(entry.system, entry.prompt, entry.controller.signal);
-   line = text === undefined ? undefined : entry.clean(text);
+   line = text === undefined ? undefined : withoutCopiedLines(entry.clean(text), entry.system);
   } catch {
    // A missing model, a worker failure, or a timeout leaves the fallback line.
   } finally {

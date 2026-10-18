@@ -4,8 +4,13 @@ import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-containe
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
-import { callLabel, callSubject, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
+import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutCopiedLines, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
 import { ToolRows } from "../lib/tool-rows-host";
+
+test("a model line copied from the prompt's examples is dropped, so the row keeps the intent", () => {
+	expect(withoutCopiedLines("Looking for where approvalMode is set", CallSystemPrompt)).toBeUndefined();
+	expect(withoutCopiedLines("Looking for where tool rows cut long titles", CallSystemPrompt)).toBe("Looking for where tool rows cut long titles");
+});
 
 test("a run spans quiet blocks between its calls but leaves trailing quiet blocks outside", () => {
 	expect(planRuns(["break", "tool", "quiet", "tool", "quiet"], false)).toEqual([{ head: 1, tools: [1, 3], quiet: [2], closed: false }]);
@@ -160,7 +165,7 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		expect(view()).toEqual(["prompt", "", "✔ Git   git status", "✔ Grep  Finding TODOs"]);
 		await settle();
-		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Finding TODOs"]);
+		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Inspect with grep"]);
 	} finally {
 		uninstall();
 	}
@@ -177,7 +182,7 @@ test("a call keeps the agent's intent after OMP strips it from the args it runs 
 		streamed.updateArgs({ command: "git status", i: "Checking status" }, "a");
 		streamed.updateArgs({ command: "git status" }, "a");
 		streamed.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
-		await settle();
+		// Checked before the model line lands, which then replaces the intent.
 		expect(view()).toEqual(["✔ Git  Checking status"]);
 	} finally {
 		uninstall();
@@ -194,7 +199,7 @@ test("a card built from stripped args takes the agent's intent from the call rec
 		transcript.addChild(card);
 		card.updateArgs({ command: "git status" }, "a");
 		card.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
-		await settle();
+		// Checked before the model line lands, which then replaces the intent.
 		expect(view()).toEqual(["✔ Git  Checking status"]);
 	} finally {
 		uninstall();
@@ -219,7 +224,7 @@ test("blocks moved into another transcript without addChild still draw as rows (
 	}
 });
 
-test("lines mode aligns labels and titles into columns, puts the file last, and drops the model's filename lead", async () => {
+test("lines mode shows intents at once, lets model lines replace them, aligns columns, and drops the model's filename lead", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode);
 	try {
@@ -227,7 +232,7 @@ test("lines mode aligns labels and titles into columns, puts the file last, and 
 		tool("read", { path: "lib/tool-rows-host.ts:10-40" }, "a");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
-		// The intents show as written; only the call without one waits for the model.
+		// The intents show as written at once; the call without one has an empty status line until the model answers.
 		expect(view().slice(2)).toEqual([
 			`✔ Read  ${" ".repeat(13)}  tool-rows-host.ts:10-40`,
 			"✔ Grep  Finding TODOs",
@@ -236,8 +241,8 @@ test("lines mode aligns labels and titles into columns, puts the file last, and 
 		await settle();
 		expect(view().slice(2)).toEqual([
 			"✔ Read  render draws rows; plan groups runs  tool-rows-host.ts:10-40",
-			"✔ Grep  Finding TODOs",
-			`✔ Read  Reading a${" ".repeat(26)}  a.ts`,
+			"✔ Grep  Inspect with grep",
+			"✔ Read  render draws rows; plan groups runs  a.ts",
 		]);
 	} finally {
 		uninstall();
@@ -258,7 +263,7 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		expect(rows.map(row => Bun.stringWidth(row) <= 50)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
 		expect(rows[0]).toBe("✔ Read  render draws row…  tool-rows-host.ts:10-40");
-		expect(rows[1]).toBe("✔ Grep  Finding TODOs");
+		expect(rows[1]).toBe("✔ Grep  Inspect with grep");
 		expect(rows[2]).toEndWith("  a.ts");
 		expect(rows[2]!.indexOf("a.ts")).toBe(rows[0]!.indexOf("tool-rows-host.ts"));
 	} finally {
@@ -380,9 +385,9 @@ test("a group bullet longer than a call line keeps every word and wraps under it
 	}
 });
 
-test("a grouped read whose args OMP stripped of the intent still shows the agent's intent", () => {
+test("a grouped read whose args OMP stripped of the intent shows the agent's intent until the model line replaces it", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, calls, readGroups, view } = setup(mode, async () => "Model line that must not show");
+	const { uninstall, transcript, calls, readGroups, view } = setup(mode, async () => "Learning how the a module loads its config");
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		const group = new ReadToolGroupComponent();
@@ -390,6 +395,27 @@ test("a grouped read whose args OMP stripped of the intent still shows the agent
 		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } }]]));
 		transcript.addChild(group);
 		expect(view().slice(2)).toEqual(["✔ Read  Checking the a module  a.ts"]);
+		await settle();
+		expect(view().slice(2)).toEqual(["✔ Read  Learning how the a module loads its config  a.ts"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a skill read is labelled Skill, names the skill, and asks the model to sum up what the skill teaches", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const prompts: string[] = [];
+	const { uninstall, transcript, tool, view } = setup(mode, async (system, prompt) => {
+		prompts.push(system + prompt);
+		return "Learning to write prompts native to each model";
+	});
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		tool("read", { path: "skill://model-native-prompt/references/dispatch.md" }, "a");
+		view();
+		await settle();
+		expect(view().slice(2)).toEqual(["✔ Skill  Learning to write prompts native to each model  model-native-prompt"]);
+		expect(prompts.some(text => text.includes("skill:// path") && text.includes("skill://model-native-prompt/references/dispatch.md"))).toBe(true);
 	} finally {
 		uninstall();
 	}
