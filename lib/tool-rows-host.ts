@@ -31,7 +31,9 @@ import {
 	runPrompt,
 	titlesFromOutput,
 	toolLabel,
+	ToneLabel,
 	withoutLabel,
+	withTone,
 } from "./tool-rows";
 
 /*
@@ -715,12 +717,18 @@ export class ToolRows {
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
 		if (this.host.mode() === "group") return this.groupRows(state, calls, run.closed, theme, width).map(row => truncateToWidth(row, width));
-		const titles = calls.map(call => this.title(call));
+		const titles = calls.map(call => this.toned(call, this.title(call)));
 		const labelWidth = Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length));
 		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
 		const fit = { width, subjectWidth: Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))) };
 		return calls.map((call, index) => truncateToWidth(this.callRow(call, titles[index]!, subjects[index], labelWidth, titleWidth, theme, fit), width));
+	}
+
+	/** A finished call's settled title, with an Elcor tone label on some rows. Group rows and step lines never get one. */
+	private toned(call: CallState, title: { text: string; settled: boolean }): { text: string; settled: boolean } {
+		if (!title.settled || !call.id || !call.result || call.partial) return title;
+		return { ...title, text: withTone(title.text, { id: call.id, name: call.name ?? "", args: call.args, failed: call.result.isError === true }) };
 	}
 
 	private runCalls(tools: readonly Component[]): CallState[] {
@@ -769,16 +777,18 @@ export class ToolRows {
 		return `${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
 	}
 
-	/** A settled title in muted text with its code words in body text; a fallback (intent) title is dim italic. */
+	/** A settled title in muted text with its code words in body text, its tone label dim italic; a fallback (intent) title is dim italic. */
 	private body(title: { text: string; settled: boolean }, theme: Theme): string {
 		if (!title.settled) return theme.fg("dim", theme.italic(title.text));
-		let out = "";
+		const tone = ToneLabel.exec(title.text)?.[0] ?? "";
+		const text = title.text.slice(tone.length);
+		let out = tone ? theme.fg("dim", theme.italic(tone.trimEnd())) + " " : "";
 		let last = 0;
-		for (const match of title.text.matchAll(CodeToken)) {
-			out += theme.fg("muted", title.text.slice(last, match.index)) + theme.fg("text", match[0]);
+		for (const match of text.matchAll(CodeToken)) {
+			out += theme.fg("muted", text.slice(last, match.index)) + theme.fg("text", match[0]);
 			last = match.index + match[0].length;
 		}
-		return out + theme.fg("muted", title.text.slice(last));
+		return out + theme.fg("muted", text.slice(last));
 	}
 
 	/**

@@ -4,7 +4,7 @@ import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-containe
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
-import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutCopiedLines, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
+import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutCopiedLines, withoutLabel, withTone, type ToolRowsMode } from "../lib/tool-rows";
 import { ToolRows } from "../lib/tool-rows-host";
 
 test("a model line copied from the prompt's examples is dropped, so the row keeps the intent", () => {
@@ -91,6 +91,26 @@ test("small models' tool prefixes are stripped from titles", () => {
 	expect(cleanLine("Grep approval in pi-coding-agent")).toBe("Grep approval in pi-coding-agent");
 	expect(cleanLine("Tool-approval.ts does find getToolDecision")).toBe("approval.ts does find getToolDecision");
 	expect(cleanLine("approval.ts: function resolveApproval")).toBe("approval.ts: function resolveApproval");
+});
+
+test("a small model's echo of the -ing verb rule is stripped from its line", () => {
+	expect(cleanLine("-ing: Understanding how withTone works")).toBe("Understanding how withTone works");
+	expect(cleanLine("-Understanding how Orca renames panes")).toBe("Understanding how Orca renames panes");
+});
+
+test("an Elcor tone label leads about one finished call in four, keeps its choice per call, and fits what the call did", () => {
+	const ids = Array.from({ length: 400 }, (_, index) => `toolu_${index}`);
+	const tone = (id: string, name: string, args: unknown, failed = false) => withTone("Checking the config", { id, name, args, failed });
+	const labelled = ids.filter(id => tone(id, "read", { path: "a.ts" }) !== "Checking the config");
+	expect(labelled.length).toBeGreaterThan(60);
+	expect(labelled.length).toBeLessThan(140);
+	expect(ids.map(id => tone(id, "read", { path: "a.ts" }))).toEqual(ids.map(id => tone(id, "read", { path: "a.ts" })));
+	const moodOf = (name: string, args: unknown, failed = false) => new Set(labelled.map(id => /^\[([^\]]+)\]/.exec(tone(id, name, args, failed))![1]));
+	expect(moodOf("bash", { command: "ls" }, true)).toEqual(new Set(["stoic acceptance", "faint dread"]));
+	expect(moodOf("bash", { command: "rm -rf dist" })).toEqual(new Set(["polite alarm"]));
+	expect(moodOf("bash", { command: "bun test tests/a.test.ts" })).toEqual(new Set(["cautious optimism", "renewed hope"]));
+	expect(moodOf("grep", { pattern: "TODO" })).toEqual(new Set(["mild suspicion", "grudging curiosity"]));
+	expect(withTone("", { id: labelled[0]!, name: "read", args: {}, failed: false })).toBe("");
 });
 
 test("the subject column names the file a call works on, from its arguments", () => {

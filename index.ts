@@ -27,6 +27,7 @@ import { outlineMarkdown, outlineSource, recoverOldText, renderEditOutline, rend
 import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
 import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
+import { orcaPaneTitle } from "./lib/orca-pane-title";
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
@@ -2422,6 +2423,18 @@ export default function hydemods(pi: ExtensionAPI): void {
 		await pi.setSessionName(name);
 	};
 
+	// The Orca tab shows the session name. The host names sessions on its own too (first prompt,
+	// todo replans) and tells no extension, so each session event and turn end compares the name.
+	// Only the session with a UI owns the pane; subagents in the same process leave it alone.
+	const showPaneTitle = orcaPaneTitle();
+	const syncPaneTitle = (ctx: ExtensionContext) => {
+		if (ctx.hasUI) showPaneTitle(pi.getSessionName());
+	};
+	pi.on("turn_end", (_event, ctx) => syncPaneTitle(ctx));
+	pi.on("agent_end", (_event, ctx) => syncPaneTitle(ctx));
+	// A pane that drops back to a shell should not keep the old session's name.
+	pi.on("session_shutdown", (_event, ctx) => { if (ctx.hasUI) showPaneTitle(undefined); });
+
 	let titleInFlightFor: string | undefined;
 	const nameSessionFromPrompt = async (prompt: string, ctx: ExtensionContext) => {
 		if (!isTweakEnabled("session-title") || !isSettingsInitialized()) return;
@@ -2434,6 +2447,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			// The session may have been switched or named by hand while the model was thinking.
 			if (!title || ctx.sessionManager.getSessionId() !== sessionId || pi.getSessionName()) return;
 			await pi.setSessionName(title);
+			syncPaneTitle(ctx);
 		} finally {
 			if (titleInFlightFor === sessionId) titleInFlightFor = undefined;
 		}
@@ -2860,6 +2874,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
 		void pinHostTitle(ctx);
+		syncPaneTitle(ctx);
 	};
 	pi.on("session_start", onSession);
 	pi.on("session_switch", onSession);
@@ -2913,6 +2928,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 				return;
 			}
 			await pi.setSessionName(name);
+			syncPaneTitle(ctx);
 			ctx.ui.notify(`Session renamed to "${name}"`, "info");
 		},
 	});
