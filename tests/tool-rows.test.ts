@@ -30,6 +30,19 @@ test("model replies become one plain phrase or are refused", () => {
 	expect(cleanLine(`Read ${"very ".repeat(40)}long`)!.length).toBeLessThanOrEqual(96);
 });
 
+test("titles name files by bare filename and keep URLs whole", () => {
+	expect(cleanLine("edit ~/work/hydemods/README.md to document marker")).toBe("Edit README.md to document marker");
+	expect(cleanLine("Fetch https://example.com/docs/page.html for setup")).toBe("Fetch https://example.com/docs/page.html for setup");
+	expect(cleanLine("List files in app/models")).toBe("List files in app/models");
+});
+
+test("read titles drop the Read prefix, keep the filename's case, and cut whole method clauses", () => {
+	expect(cleanLine("Read: hydemods/index.ts: recommendFor ranks tools; execute returns picks")).toBe("index.ts: recommendFor ranks tools; execute returns picks");
+	expect(cleanLine("Read lib/tool-rows-host.ts: lineKey keys the cache")).toBe("tool-rows-host.ts: lineKey keys the cache");
+	const long = cleanLine(`index.ts: first does ${"a ".repeat(20)}thing; second does ${"b ".repeat(20)}thing; third does c`)!;
+	expect(long).toBe(`index.ts: first does ${"a ".repeat(20)}thing`);
+});
+
 test("the fallback line prefers the agent's intent, then the call's main argument", () => {
 	expect(fallbackLine({ command: "ls", i: "Listing files" })).toBe("Listing files");
 	expect(fallbackLine({ language: "py", title: "Loading rows", code: "x" })).toBe("Loading rows");

@@ -74,6 +74,7 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
 - **`recommend_tools`.** Asks the `judge` role which tools and skills fit a task. Each candidate becomes one yes/no question, sent in batches of 40. Returns up to `limit` matches (default 5) scoring at least 50%, best first. Judge cost is billed to the session.
+  Put `/recommend-tools` anywhere in a prompt to run it on that prompt. The marker is removed before the prompt is sent. The picks go to the agent as a visible message ahead of the turn. The tool toggle switches the marker off too.
 - **`ror` (ready for review).** Finds your ready PRs, groups them in tiers, and sends them in a Slack DM.
 
 ## ROR

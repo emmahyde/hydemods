@@ -28,6 +28,52 @@ function summarize(description: string): string {
 	return flat.length > DESCRIPTION_CHARS ? `${flat.slice(0, DESCRIPTION_CHARS - 1)}…` : flat;
 }
 
+/** Prompt marker that asks for recommendations on the rest of the prompt. */
+export const RECOMMEND_MARKER = "/recommend-tools";
+const MARKER_PATTERN = /(^|\s)\/recommend-tools(?:[ \t]|(?=\s)|$)/g;
+
+/**
+ * `text` without every standalone marker, and whether one was present. The marker must stand alone,
+ * so `docs/recommend-tools` and `/recommend-toolsx` are left untouched. Only the marker and one
+ * following space go; the rest of the prompt, including indentation, is kept as typed.
+ */
+export function stripRecommendMarker(text: string): { text: string; marked: boolean } {
+	let marked = false;
+	const stripped = text.replace(MARKER_PATTERN, (_match, lead: string) => {
+		marked = true;
+		return lead;
+	});
+	return { text: marked ? stripped.trim() : text, marked };
+}
+
+/**
+ * Removes and returns every pending marked prompt that is one whole message of `prompt`. A queued
+ * batch joins its user messages with a blank line, so a match must fill a whole segment between
+ * those joins: pending `fix` never matches an unmarked `fix tests`. Each pending entry is taken at
+ * most as many times as its message appears in the batch.
+ */
+export function takeMarkedPrompts(pending: string[], prompt: string): string[] {
+	const taken: string[] = [];
+	for (let index = 0; index < pending.length; ) {
+		const text = pending[index]!;
+		const occurrences = countWholeMessage(prompt, text) - taken.filter(t => t === text).length;
+		if (occurrences > 0) {
+			taken.push(text);
+			pending.splice(index, 1);
+		} else index++;
+	}
+	return taken;
+}
+
+function countWholeMessage(prompt: string, text: string): number {
+	const joined = `\n\n${prompt}\n\n`;
+	const needle = `\n\n${text}\n\n`;
+	let count = 0;
+	// Step past the needle minus its trailing join, so back-to-back equal messages share a separator.
+	for (let at = joined.indexOf(needle); at !== -1; at = joined.indexOf(needle, at + needle.length - 2)) count++;
+	return count;
+}
+
 export function candidateQuestion(candidate: Candidate): NoulQuestion {
 	return {
 		type: "noul",

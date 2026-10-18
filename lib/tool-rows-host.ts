@@ -11,6 +11,7 @@ import {
 	TtsrNotificationComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components";
 import {
+	type CallText,
 	CallSystemPrompt,
 	type Complete,
 	LineCache,
@@ -19,8 +20,10 @@ import {
 	type ToolRowsMode,
 	callPrompt,
 	fallbackLine,
+	outputText,
 	planRuns,
 	runPrompt,
+	titlesFromOutput,
 	toolLabel,
 } from "./tool-rows";
 
@@ -524,15 +527,24 @@ export class ToolRows {
 		return !call.sealed && (call.result === undefined || call.partial);
 	}
 
-	private lineKey(call: CallState): string | undefined {
+	/** The title request for `call`, or undefined until it can be asked: a read waits for its output. */
+	private callText(call: CallState): CallText | undefined {
 		if (!call.name || call.args === undefined) return undefined;
-		return `call:${callPrompt({ name: call.name, args: call.args })}`;
+		if (!titlesFromOutput(call.name)) return { name: call.name, args: call.args };
+		if (!call.result || call.partial || call.result.isError) return undefined;
+		return { name: call.name, args: call.args, output: outputText(call.result.content) };
+	}
+
+	private lineKey(call: CallState): string | undefined {
+		const text = this.callText(call);
+		return text && `call:${callPrompt(text)}`;
 	}
 
 	private lineText(call: CallState): string {
-		const key = this.lineKey(call);
-		if (key && call.name && (call.argsComplete || call.result)) {
-			this.lines.request(key, CallSystemPrompt, callPrompt({ name: call.name, args: call.args }));
+		const text = this.callText(call);
+		if (text && (call.argsComplete || call.result)) {
+			const key = `call:${callPrompt(text)}`;
+			this.lines.request(key, CallSystemPrompt, callPrompt(text));
 			const line = this.lines.get(key);
 			if (line) return line;
 		}

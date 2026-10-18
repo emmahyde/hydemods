@@ -62,7 +62,7 @@ import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/sta
 import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
-import { type Candidate, formatRecommendations, recommend } from "./lib/recommend";
+import { type Candidate, formatRecommendations, RECOMMEND_MARKER, recommend, stripRecommendMarker, takeMarkedPrompts } from "./lib/recommend";
 import { journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { cfgDisabledExtensions, cfgSkills } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
@@ -2600,6 +2600,19 @@ export default function hydemods(pi: ExtensionAPI): void {
 			return { content: [{ type: "text" as const, text }], details };
 		},
 	});
+	const recommendFor = async (ctx: ExtensionContext, task: string, include: "all" | "tools" | "skills", limit: number, signal?: AbortSignal): Promise<string> => {
+		const candidates: Candidate[] = [];
+		if (include !== "skills") {
+			const active = new Set(pi.getActiveTools());
+			for (const tool of pi.getAllTools()) if (tool.name !== "recommend_tools") candidates.push({ kind: "tool", name: tool.name, description: tool.description, inactive: !active.has(tool.name) });
+		}
+		if (include !== "tools") {
+			const { skills } = await loadSkills({ ...cfgSkills.get(hostSettings), cwd: ctx.cwd, disabledExtensions: cfgDisabledExtensions.get(hostSettings) });
+			for (const skill of skills) candidates.push({ kind: "skill", name: skill.name, description: skill.description });
+		}
+		const judge = resolveJudge({ settings: hostSettings, registry: ctx.modelRegistry, sessionModel: ctx.model, purpose: "hydemods_recommend", onUsage: journalJudgmentUsage(ctx.sessionManager) });
+		return formatRecommendations(await recommend(judge, task, candidates, { limit: Math.max(1, limit), signal }));
+	};
 	pi.registerTool({
 		name: "recommend_tools",
 		label: "Recommend Tools",
@@ -2611,19 +2624,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			include: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("tools"), Type.Literal("skills")], { description: 'Default "all".' })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const include = params.include ?? "all";
-			const candidates: Candidate[] = [];
-			if (include !== "skills") {
-				const active = new Set(pi.getActiveTools());
-				for (const tool of pi.getAllTools()) if (tool.name !== "recommend_tools") candidates.push({ kind: "tool", name: tool.name, description: tool.description, inactive: !active.has(tool.name) });
-			}
-			if (include !== "tools") {
-				const { skills } = await loadSkills({ ...cfgSkills.get(hostSettings), cwd: ctx.cwd, disabledExtensions: cfgDisabledExtensions.get(hostSettings) });
-				for (const skill of skills) candidates.push({ kind: "skill", name: skill.name, description: skill.description });
-			}
-			const judge = resolveJudge({ settings: hostSettings, registry: ctx.modelRegistry, sessionModel: ctx.model, purpose: "hydemods_recommend", onUsage: journalJudgmentUsage(ctx.sessionManager) });
-			const picks = await recommend(judge, params.task, candidates, { limit: Math.max(1, params.limit ?? 5), signal });
-			return { content: [{ type: "text" as const, text: formatRecommendations(picks) }], details: undefined };
+			const text = await recommendFor(ctx, params.task, params.include ?? "all", params.limit ?? 5, signal);
+			return { content: [{ type: "text" as const, text }], details: undefined };
 		},
 	});
 	pi.registerTool({
@@ -2824,12 +2826,36 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// jobs; cancelling here aborts the loop and its shell check before the manager drains.
 	pi.on("session_shutdown", () => { monitors.cancelAll(); evalSummaries.clear(); lastCtx = undefined; });
 
-	pi.on("before_agent_start", (event, ctx) => {
+	// `/recommend-tools` anywhere in a prompt: strip it on submit (input handlers run before slash
+	// commands dispatch), then attach the judge's picks for that prompt before its turn. Marked
+	// prompts are remembered by text, so a queued unmarked prompt never takes another's picks.
+	const recommendPending: string[] = [];
+	pi.on("input", (event, ctx) => {
+		if (!isTweakEnabled("recommend-tools")) return;
+		const { text, marked } = stripRecommendMarker(event.text);
+		if (!marked) return;
+		if (!text) {
+			ctx.ui.notify(`Add a task after ${RECOMMEND_MARKER}`, "warning");
+			return { handled: true };
+		}
+		recommendPending.push(text);
+		return { text };
+	});
+
+	pi.on("before_agent_start", async (event, ctx) => {
 		const prompt = typeof event.prompt === "string" ? event.prompt : "";
 		if (prompt.trim().length > 0) {
 			lastPrompt = prompt;
 			refreshLastPromptDrawer(ctx);
 			void nameSessionFromPrompt(prompt, ctx);
+		}
+		const marked = takeMarkedPrompts(recommendPending, prompt);
+		if (marked.length === 0) return;
+		try {
+			const picks = await recommendFor(ctx, marked.join("\n\n"), "all", 5);
+			return { message: { customType: "hydemods-recommend-tools", display: true, content: `Tools and skills the judge recommends for this prompt (requested with ${RECOMMEND_MARKER}):\n\n${picks}` } };
+		} catch (error) {
+			ctx.ui.notify(`${RECOMMEND_MARKER} failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	});
 
