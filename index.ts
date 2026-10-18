@@ -65,6 +65,7 @@ import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
 import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { galleryPort, galleryStore, startGalleryServer, type GalleryServer, type GalleryStore } from "./lib/gallery";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 import { type Candidate, formatRecommendations, RECOMMEND_MARKER, recommend, stripRecommendMarker, takeMarkedPrompts } from "./lib/recommend";
@@ -2933,7 +2934,84 @@ export default function hydemods(pi: ExtensionAPI): void {
 		},
 	});
 
+	/* ------------------------------- Gallery -------------------------------- */
 
+	// One live gallery page per project; the server starts on first use and stops with the session.
+	// A process that only shares another's server binds again each time, so it takes over the port
+	// when that process exits.
+	let gallery: { cwd: string; store: GalleryStore; server: GalleryServer } | undefined;
+	const openGallery = async (cwd: string) => {
+		if (gallery?.cwd !== cwd || !gallery.server.owned) {
+			gallery?.server.stop();
+			const store = galleryStore(cwd);
+			gallery = { cwd, store, server: await startGalleryServer(store, galleryPort(cwd)) };
+		}
+		return gallery;
+	};
+	const showInBrowser = (url: string) => {
+		execFile(process.platform === "darwin" ? "open" : "xdg-open", [url], () => {});
+	};
+	pi.on("session_shutdown", () => { gallery?.server.stop(); gallery = undefined; });
+	pi.registerTool({
+		name: "gallery",
+		label: "Gallery",
+		description: [
+			"Shared picture gallery: a live web page beside the terminal. Push screenshots, renders, plots and generated images here instead of putting them in the chat; the user sees each one arrive at once.",
+			'op "push" (default) copies `paths` (local image files) or fetches `url`, with an optional `caption`; the first push opens the page when no tab shows it. "open" opens the page. "list" shows ids. "remove" deletes `id`. "clear" deletes everything.',
+			"Formats: png jpg gif webp svg avif bmp, up to 50 MB each. The gallery is per project and keeps pictures across sessions.",
+		].join("\n"),
+		parameters: Type.Object({
+			op: Type.Optional(Type.Union([Type.Literal("push"), Type.Literal("open"), Type.Literal("list"), Type.Literal("remove"), Type.Literal("clear")])),
+			paths: Type.Optional(Type.Array(Type.String(), { description: "Image files to push, absolute or relative to the working directory." })),
+			url: Type.Optional(Type.String({ description: "Image URL to push." })),
+			caption: Type.Optional(Type.String({ description: "What the picture shows; one sentence." })),
+			id: Type.Optional(Type.String({ description: "Picture id, for remove." })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const { store, server } = await openGallery(ctx.cwd);
+			const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+			const op = params.op ?? "push";
+			if (op === "open") {
+				showInBrowser(server.url);
+				return reply(`Opened ${server.url}`);
+			}
+			if (op === "list") {
+				const { items } = store.read();
+				return reply(items.length ? items.map(item => `${item.id}  ${item.caption ?? item.source}`).join("\n") : `The gallery is empty. ${server.url}`);
+			}
+			if (op === "remove") {
+				if (!params.id) throw new Error("remove needs id.");
+				if (!store.remove(params.id)) throw new Error(`No picture ${params.id}. Use op "list".`);
+				return reply(`Removed ${params.id}.`);
+			}
+			if (op === "clear") return reply(`Removed ${store.clear()} pictures.`);
+			const sources = [...(params.paths ?? []).map(path => ({ path })), ...(params.url ? [{ url: params.url }] : [])];
+			if (!sources.length) throw new Error("push needs paths or url.");
+			const session = pi.getSessionName() ?? `Session ${ctx.sessionManager.getSessionId().slice(-8)}`;
+			const added: string[] = [];
+			const failed: string[] = [];
+			for (const source of sources) {
+				try {
+					added.push((await store.add({ ...source, caption: params.caption, session, cwd: ctx.cwd })).id);
+				} catch (error) {
+					failed.push(error instanceof Error ? error.message : String(error));
+				}
+			}
+			if (!added.length) throw new Error(failed.join("\n"));
+			const opened = (await server.viewers()) === 0;
+			if (opened) showInBrowser(server.url);
+			const lines = [`Added ${added.length} picture${added.length === 1 ? "" : "s"} (${added.join(", ")}) to ${server.url}${opened ? ", opened in the browser" : ""}.`, ...failed.map(message => `Skipped: ${message}`)];
+			return reply(lines.join("\n"));
+		},
+	});
+	pi.registerCommand("gallery", {
+		description: "Open this project's picture gallery in the browser",
+		handler: async (_args, ctx) => {
+			const { server } = await openGallery(ctx.cwd);
+			showInBrowser(server.url);
+			ctx.ui.notify(`Gallery: ${server.url}`, "info");
+		},
+	});
 
 	pi.registerCommand("hydemods", {
 		description: "Open the tweak panel or set collapsed-lines N (default 5, saved to settings)",

@@ -76,6 +76,10 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
   - `exit`: runs once. It reports on exit.
   - `timeoutMin` defaults to 60. A final card shows the exit code and the last 8 lines.
   - When the session exposes its job manager, each monitor is also one native job. `proc://` lists it for its whole life, `proc://<id>/kill` cancels it, and `list` shows its `proc://` id. Without a job manager the monitor runs the same way, without a `proc://` entry.
+- **`gallery`.** A shared picture gallery: a live local web page you keep open beside the terminal, so pictures stay out of the scrollback. The agent pushes image files (`paths`) or a `url`, with a `caption`. Each picture appears in the open tab at once, and with **follow** on, the viewer opens it. Other operations: `open`, `list`, `remove`, `clear`. `/gallery` opens the page.
+  - One gallery per project, kept across sessions in `~/.omp/gallery/<project>-<hash>/`. Every session of the project shares one stable `127.0.0.1` port, so a tab kept open survives restarts. Pictures are grouped by session.
+  - The first push opens the page in your browser when no tab shows it.
+  - Viewer keys: `←`/`→` move, `f` toggles fit and actual size, `c` copies the source path, `d` deletes, `esc` closes. Formats: png, jpg, gif, webp, svg, avif and bmp, up to 50 MB.
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
 - **`recommend_tools`.** Asks the `judge` role which tools and skills fit a task. Each candidate becomes one yes/no question, sent in batches of 40. Returns up to `limit` matches (default 5) scoring at least 50%, best first. Judge cost is billed to the session.
