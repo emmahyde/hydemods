@@ -2152,7 +2152,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		repaintToolCards(ctx);
 		if (ctx.hasUI) ctx.ui.notify(`Tool rows: ${TOOL_ROWS_MODES.map((mode) => (mode === next ? `[${mode}]` : mode)).join(" · ")}`, "info");
 	};
-	pi.registerShortcut("alt+o", { description: "Cycle hydemods tool rows (cards → lines → group)", handler: cycleToolRows });
+	pi.registerShortcut("ctrl+n", { description: "Cycle hydemods tool rows (cards → lines → group)", handler: cycleToolRows });
 
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
