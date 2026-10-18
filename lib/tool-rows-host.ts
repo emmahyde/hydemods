@@ -23,6 +23,7 @@ import {
 	callSubject,
 	cleanLines,
 	fallbackLine,
+	MaxFullLineLength,
 	outputText,
 	planRuns,
 	runPrompt,
@@ -582,10 +583,11 @@ export class ToolRows {
 		if (state.kind === "reads") {
 			const entries = this.host.readEntries(component as ReadToolGroupComponent);
 			if (!entries) return [];
+			// The read group keeps only the latest args, which OMP has stripped of `i`; the stream still has it.
 			return [...entries].map(([id, entry]) => ({
 				id,
 				name: "read",
-				args: entry.args,
+				args: withIntent(entry.args, this.host.lookupCall(id)?.args),
 				argsComplete: true,
 				result: entry.result,
 				partial: entry.result === undefined,
@@ -620,7 +622,7 @@ export class ToolRows {
 	/** The agent's intent (`i`) as one display line, or "" when the call has none. */
 	private intent(call: CallState): string {
 		const record = call.args && typeof call.args === "object" ? (call.args as Record<string, unknown>) : undefined;
-		return fallbackLine({ i: record?.i });
+		return fallbackLine({ i: record?.i }, MaxFullLineLength);
 	}
 
 	/**
@@ -728,7 +730,7 @@ export class ToolRows {
 		if (state.summaryKey === undefined) {
 			const prompt = runPrompt(lines);
 			state.summaryKey = `run:${prompt}`;
-			this.lines.request(state.summaryKey, RunSystemPrompt, prompt, Date.now(), text => cleanLines(text, MaxRunItems));
+			this.lines.request(state.summaryKey, RunSystemPrompt, prompt, Date.now(), text => cleanLines(text, MaxRunItems, MaxFullLineLength));
 		}
 		return state.summaryKey;
 	}

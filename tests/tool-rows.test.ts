@@ -3,7 +3,7 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
+import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { callLabel, callSubject, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
 import { ToolRows } from "../lib/tool-rows-host";
 
@@ -118,6 +118,7 @@ const settle = async () => { for (let i = 0; i < 6; i++) await Promise.resolve()
 
 function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>) {
 	const calls = new Map<string, { name: string; args: unknown }>();
+	const readGroups = new Map<object, Map<string, { args: unknown; result?: { content: unknown[] } }>>();
 	const rows = new ToolRows({
 		mode: () => mode.value,
 		expanded: () => false,
@@ -128,7 +129,7 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 			return tool === "read" ? "wrong.ts: render draws rows; plan groups runs" : `Inspect with ${tool}`;
 		}),
 		repaint: () => { },
-		readEntries: () => undefined,
+		readEntries: group => readGroups.get(group) as never,
 		lookupCall: id => calls.get(id),
 	});
 	const uninstall = rows.install();
@@ -142,7 +143,7 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		component.updateResult({ content: [{ type: "text", text: "line one\nline two" }] }, false, id);
 		return component;
 	};
-	return { rows, uninstall, transcript, tool, calls, view: () => plain(transcript.renderViewport(100, 30, frame)) };
+	return { rows, uninstall, transcript, tool, calls, readGroups, view: () => plain(transcript.renderViewport(100, 30, frame)) };
 }
 
 beforeAll(async () => {
@@ -354,6 +355,41 @@ test("a group bullet wider than the pane wraps under its own text instead of bei
 			"  • Kept it",
 			"",
 		]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a group bullet longer than a call line keeps every word and wraps under its own text", async () => {
+	const mode = { value: "group" as ToolRowsMode };
+	const long = "Moved the file column to the end of every row so that the files line up under the longest status line in the batch";
+	const { uninstall, transcript, tool } = setup(mode, async () => long);
+	try {
+		tool("read", { path: "src/a.ts", i: "Understanding the a module" }, "a");
+		transcript.addChild(new Text("reply", 0, 0));
+		transcript.renderViewport(40, 30, frame);
+		await settle();
+		const rows = plain(transcript.renderViewport(40, 30, frame));
+		const bullet = rows.slice(1, rows.indexOf(""));
+		expect(long.length).toBeGreaterThan(96);
+		expect(bullet[0]).toStartWith("  • Moved");
+		expect(bullet.slice(1).every(row => /^ {4}\S/.test(row))).toBe(true);
+		expect(bullet.map(row => row.slice(4)).join(" ")).toBe(long);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a grouped read whose args OMP stripped of the intent still shows the agent's intent", () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, calls, readGroups, view } = setup(mode, async () => "Model line that must not show");
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		const group = new ReadToolGroupComponent();
+		calls.set("r1", { name: "read", args: { path: "src/a.ts", i: "Checking the a module" } });
+		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } }]]));
+		transcript.addChild(group);
+		expect(view().slice(2)).toEqual(["✔ Read  Checking the a module  a.ts"]);
 	} finally {
 		uninstall();
 	}

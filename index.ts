@@ -2341,7 +2341,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 		if (event.message.role === "assistant") {
 			for (const block of event.message.content) {
 				if (block.type !== "toolCall") continue;
-				liveCalls.set(block.id, { name: block.name, args: block.arguments });
+				// OMP strips `i` from a running call's arguments; keep the copy `tool_execution_start` recorded.
+				const known = liveCalls.get(block.id)?.args as { i?: unknown } | undefined;
+				const args = typeof known?.i === "string" && block.arguments && typeof block.arguments === "object" && !("i" in block.arguments) ? { ...block.arguments, i: known.i } : block.arguments;
+				liveCalls.set(block.id, { name: block.name, args });
 				toolRows.noteCall(block.id);
 			}
 		}

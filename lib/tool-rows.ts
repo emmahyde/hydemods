@@ -78,6 +78,8 @@ const MaxArgString = 600;
 const MaxOutputString = 1_600;
 const MaxPromptLength = 2_400;
 const MaxLineLength = 96;
+/** Group bullets and the agent's intent wrap or cut to the pane, so they keep far more than a model call line. */
+export const MaxFullLineLength = 600;
 
 /** A read is titled by the code it shows, so its title waits for the result. */
 export function titlesFromOutput(name: string): boolean {
@@ -94,8 +96,8 @@ export function outputText(content: unknown): string {
   .join("\n");
 }
 
-/** The agent's own intent (`i`), an Eval title, or the call's main argument. Never empty when the call has one. */
-export function fallbackLine(args: unknown): string {
+/** The agent's own intent (`i`), an Eval title, or the call's main argument, cut at `max`. Never empty when the call has one. */
+export function fallbackLine(args: unknown, max = MaxLineLength): string {
  if (!args || typeof args !== "object") return "";
  const record = args as Record<string, unknown>;
  for (const key of ["i", "title", "command", "path", "pattern", "query", "url", "input", "code"]) {
@@ -103,7 +105,7 @@ export function fallbackLine(args: unknown): string {
   if (typeof value !== "string") continue;
   const text = key === "command" ? (commitMessage(value) ?? value) : value;
   const line = stripControls(text).split(/\r?\n/, 1)[0]!.replace(/\s+/g, " ").trim();
-  if (line) return line.length > MaxLineLength ? `${line.slice(0, MaxLineLength - 1)}…` : line;
+  if (line) return line.length > max ? `${line.slice(0, max - 1)}…` : line;
  }
  return "";
 }
@@ -277,8 +279,8 @@ export function runPrompt(lines: readonly string[]): string {
  return JSON.stringify(shown);
 }
 
-/** One display line from a model reply, or undefined when the reply is not a usable phrase. */
-export function cleanLine(text: string): string | undefined {
+/** One display line from a model reply, cut at `max`, or undefined when the reply is not a usable phrase. */
+export function cleanLine(text: string, max = MaxLineLength): string | undefined {
  // Bound work on an untrusted reply independently of the token limit.
  if (text.length > 2_000) return undefined;
  const first = stripControls(text)
@@ -304,16 +306,16 @@ export function cleanLine(text: string): string | undefined {
   .replace(/(?<![\w:/.~-])(?:[\w.~-]*\/)+([\w-][\w.-]*\.[A-Za-z]\w*)/g, "$1");
  if (line.split(" ").length < 2) return undefined;
  // A method list (`file: a does x; b does y`) keeps whole clauses rather than cutting one mid-word.
- while (line.length > MaxLineLength && line.includes("; ")) line = line.slice(0, line.lastIndexOf("; "));
- if (line.length > MaxLineLength) line = `${line.slice(0, MaxLineLength - 1).replace(/\s+\S*$/, "")}…`;
+ while (line.length > max && line.includes("; ")) line = line.slice(0, line.lastIndexOf("; "));
+ if (line.length > max) line = `${line.slice(0, max - 1).replace(/\s+\S*$/, "")}…`;
  // A filename lead (`approval.ts does x`, `file.ts: …`) keeps its case.
  return /^[\w-][\w.-]*\.[A-Za-z]\w*\b/.test(line) ? line : line[0]!.toUpperCase() + line.slice(1);
 }
 
-/** Up to `max` distinct display lines from a model reply, one per reply line, or undefined when none is usable. */
-export function cleanLines(text: string, max: number): string | undefined {
+/** Up to `max` distinct display lines from a model reply, one per reply line, each cut at `length`, or undefined when none is usable. */
+export function cleanLines(text: string, max: number, length = MaxLineLength): string | undefined {
  if (text.length > 2_000) return undefined;
- const lines = [...new Set(text.split(/\r?\n/).map(cleanLine).filter((line): line is string => line !== undefined))];
+ const lines = [...new Set(text.split(/\r?\n/).map(line => cleanLine(line, length)).filter((line): line is string => line !== undefined))];
  return lines.length ? lines.slice(0, max).join("\n") : undefined;
 }
 
