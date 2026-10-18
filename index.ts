@@ -34,6 +34,8 @@ import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-gene
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgTaskDisabledAgents } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { agentSource, expandAgentMentions, withAgentDrawer } from "./lib/agent-mentions";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText, separateGeneratedNoticeFooter, stripGeneratedNoticeFooter } from "./lib/tool-output";
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
@@ -169,6 +171,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Browse and inspect all 19 internal URL schemes before inserting a reference.",
 		category: "Interface",
 		render: () => "Type a URL and Tab, /browse, or Ctrl+Shift+U. Remote content loads only with Ctrl+F.",
+	},
+	{
+		name: "agent-mentions",
+		title: "@@agent mentions",
+		description: "Type @@ to pick a task agent type (the /agents list) with its description inline; the mention tells the agent to delegate to it.",
+		category: "Interface",
+		render: () => "Disabled agents (task.disabledAgents) are left out. Unknown @@names reach the model unchanged.",
 	},
 	{
 		name: "stalled-agent-alerts",
@@ -2490,6 +2499,14 @@ export default function hydemods(pi: ExtensionAPI): void {
 		}
 	};
 	pi.on("session_shutdown", async () => { linkServer?.stop(); linkServer = undefined; });
+	const disabledAgents = (): readonly string[] => (isSettingsInitialized() ? cfgTaskDisabledAgents.get(hostSettings) : []);
+	const agentsFor = (ctx: ExtensionContext) => agentSource(() => ctx.cwd, disabledAgents);
+	pi.on("input", async (event, ctx) => {
+		if (!isTweakEnabled("agent-mentions") || !event.text.includes("@@")) return;
+		const known = new Set((await agentsFor(ctx)()).map(a => a.name));
+		const text = expandAgentMentions(event.text, known);
+		return text === event.text ? undefined : { text };
+	});
 	const installDrawers = (ctx: ExtensionContext) => {
 		helperDrawers.install(ctx);
 		if (ctx.hasUI) {
@@ -2502,6 +2519,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 				p = withPrDrawer(p, enabled, onApplied);
 				p = withXdDrawer(p, enabled, xdSourcesFor(ctx), onApplied);
 				p = withProcDrawer(p, enabled, procSourcesFor(ctx), onApplied);
+				p = withAgentDrawer(p, () => isTweakEnabled("agent-mentions"), agentsFor(ctx));
 				return p as unknown as typeof inner;
 			});
 		}

@@ -36,6 +36,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - A run's rows reach scrollback only once the run ends and its lines land (at most 4 seconds after), so scrollback keeps the finished text.
   - `hydemods.toolRowsModel` names the local model (`omp tiny-models` lists them; default `llama3.2:3b`). Set `providers.tinyModelDevice` to `mlx` to run it on the Apple GPU; otherwise OMP runs it on the CPU. The first line waits for the model to download and load. Call arguments never leave the machine.
   - `hydemods.toolPills` (off by default) draws each row's tool label as a pill: upper case, bold, the tool's colour as the fill, and black or white text by the fill's brightness. Each pill is as wide as its label, and the titles after the pills stay aligned.
+- **@@agent mentions.** Type `@@` in the prompt to list the task agent types that `/agents` shows, each with its description. Keep typing to filter; Tab inserts `@@name`. On submit, `@@explore` becomes `the explore agent (task tool, agent: "explore")`, so the model delegates to it. Agents in `task.disabledAgents` are left out, and an `@@name` that matches no agent reaches the model unchanged. Toggle: `@@agent mentions` in `/hydemods`.
 - **TOON for the model.** The model gets JSON tool results as TOON, a compact table form that uses far fewer tokens. You still see the JSON tree.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
