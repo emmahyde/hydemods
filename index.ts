@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { ThoughtPanelLines, thoughtPanelRows } from "./lib/thought-panel";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -151,7 +152,7 @@ const TWEAK_DEFS: TweakDef[] = [
 		title: "Latest thought panel",
 		description: "Keeps thinking out of the transcript and shows only the newest thought block below the editor.",
 		category: "Interface",
-		render: () => "Turns on OMP's Hide Thinking Blocks for the session (not saved) and tails the newest thought, last 8 lines, while it streams.",
+		render: () => `Turns on OMP's Hide Thinking Blocks for the session (not saved) and tails the newest thought in a fixed ${ThoughtPanelLines}-line window, so the chrome keeps one height.`,
 	},
 	{
 		name: "session-title",
@@ -2255,9 +2256,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 	/* ---------------------------- Latest thought ---------------------------- */
 
 	// OMP's own thinking blocks stay hidden (hideThinkingBlock) while this is on; the panel shows only
-	// the newest thought block, tailing it while it streams.
-	const THOUGHT_PANEL_LINES = 8;
+	// the newest thought block in a fixed-height rolling window. A new turn keeps the last thought,
+	// marked stale, until it thinks: clearing it would collapse the panel and jump the editor.
 	let latestThought = "";
+	let thoughtStale = false;
 	let thoughtTui: { requestRender(): void } | undefined;
 
 	type ThinkingBlock = { type: "thinking"; thinking: string };
@@ -2313,16 +2315,12 @@ export default function hydemods(pi: ExtensionAPI): void {
 			"hydemods:latest-thought",
 			(tui, theme) => {
 				thoughtTui = tui;
-				let cache: { text: string; width: number; lines: string[] } | undefined;
+				let cache: { text: string; stale: boolean; width: number; lines: string[] } | undefined;
+				const style = { header: (text: string) => theme.fg("muted", text), line: (text: string) => theme.italic(theme.fg("thinkingText", text)) };
 				return {
 					render(width: number): readonly string[] {
-						if (!latestThought) return [];
-						if (cache?.text !== latestThought || cache.width !== width) {
-							const wrapped = latestThought.split("\n").filter((line) => line.trim()).flatMap((line) => wrapTextWithAnsi(line, Math.max(10, width - 4)));
-							const shown = wrapped.slice(-THOUGHT_PANEL_LINES);
-							const earlier = wrapped.length - shown.length;
-							const header = theme.fg("muted", `✻ thinking${earlier > 0 ? ` · ${earlier} earlier line${earlier === 1 ? "" : "s"}` : ""}`);
-							cache = { text: latestThought, width, lines: [header, ...shown.map((line) => `  ${theme.italic(theme.fg("thinkingText", line))}`)] };
+						if (cache?.text !== latestThought || cache.stale !== thoughtStale || cache.width !== width) {
+							cache = { text: latestThought, stale: thoughtStale, width, lines: thoughtPanelRows(latestThought, thoughtStale, width, style) };
 						}
 						return cache.lines;
 					},
@@ -2340,8 +2338,9 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const noteThought = (message: { role?: unknown; content?: unknown }) => {
 		if (!isTweakEnabled("latest-thought-panel")) return;
 		const text = lastThinkingText(message);
-		if (!text || text === latestThought) return;
+		if (!text || (text === latestThought && !thoughtStale)) return;
 		latestThought = text;
+		thoughtStale = false;
 		thoughtTui?.requestRender();
 	};
 	pi.on("message_update", (event, ctx) => {
@@ -2361,7 +2360,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		}
 	});
 	pi.on("agent_start", () => {
-		latestThought = "";
+		thoughtStale = true;
 		thoughtTui?.requestRender();
 		toolRuns.setActive(isTweakEnabled("tool-runs"));
 	});
@@ -2871,6 +2870,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
 		latestThought = latestSessionThought(ctx);
+		thoughtStale = true;
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
 		void pinHostTitle(ctx);
