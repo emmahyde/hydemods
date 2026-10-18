@@ -35,6 +35,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - A run spans the thinking and harness notices (status lines, reminders, extension messages) between its calls; they hide inside the run. A reply or a prompt ends it.
   - A run's rows reach scrollback only once the run ends and its lines land (at most 4 seconds after), so scrollback keeps the finished text.
   - `hydemods.toolRowsModel` names the local model (`omp tiny-models` lists them; default `llama3.2:3b`). Set `providers.tinyModelDevice` to `mlx` to run it on the Apple GPU; otherwise OMP runs it on the CPU. The first line waits for the model to download and load. Call arguments never leave the machine.
+  - `hydemods.toolPills` (off by default) draws each row's tool label as a pill: upper case, bold, the tool's colour as the fill, and black or white text by the fill's brightness. Each pill is as wide as its label, and the titles after the pills stay aligned.
 - **TOON for the model.** The model gets JSON tool results as TOON, a compact table form that uses far fewer tokens. You still see the JSON tree.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.

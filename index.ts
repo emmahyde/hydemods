@@ -277,6 +277,12 @@ const toolRowsModelSetting = stringSetting(
 		if (!value.trim()) throw new Error("hydemods.toolRowsModel must name a local model");
 	},
 );
+const toolPillsSetting = booleanSetting(
+	"tool-pills",
+	"Tool label pills",
+	"Draw each tool row's label as a pill: upper case, bold, the tool's colour as the fill, and black or white text by brightness.",
+	false,
+);
 
 type ToolDisplayState = { collapsedLines: number; cardsOn: boolean };
 
@@ -2114,6 +2120,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const toolRows = new ToolRows({
 		mode: () => readSetting(toolRowsSetting),
 		expanded: () => (lastCtx?.hasUI ? lastCtx.ui.getToolsExpanded() : false),
+		pills: () => readSetting(toolPillsSetting),
 		theme: () => uiTheme,
 		complete: localLine,
 		repaint: () => { if (lastCtx) repaintToolCards(lastCtx); },
@@ -2129,6 +2136,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	let uninstallToolRows: (() => void) | undefined;
 	watchSetting(toolRowsSetting, () => toolRows.refresh());
 	watchSetting(toolRowsModelSetting, () => toolRows.reset());
+	watchSetting(toolPillsSetting, () => toolRows.refresh());
 	pi.on("tool_execution_start", event => {
 		// OMP moves the agent's `i` out of the args into `intent` before the call runs.
 		const args = event.intent && event.args && typeof event.args === "object" ? { ...event.args, i: event.intent } : event.args;

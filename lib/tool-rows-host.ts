@@ -55,6 +55,8 @@ export interface ToolRowsHost {
 	/** OMP's Ctrl+O state: expanded transcripts draw native cards. */
 	expanded(): boolean;
 	theme(): Theme;
+	/** Draw labels as pills: upper case, bold, tool colour as the fill. */
+	pills?(): boolean;
 	complete: Complete;
 	repaint(): void;
 	/** Calls a grouped read block holds, as recorded by the read-group takeover. */
@@ -63,6 +65,18 @@ export interface ToolRowsHost {
 	lookupCall(id: string): { name: string; args: unknown } | undefined;
 	/** The judge that decides whether an intent says enough, or undefined when none is available. */
 	judge(): Judge | undefined;
+}
+
+/**
+ * `text` on a solid fill of the theme colour `color`, one space each side, bold, with near-black or
+ * near-white text by the fill's brightness. A colour the theme leaves to the terminal default has no
+ * fill to read, so that pill is drawn reversed instead.
+ */
+function pill(theme: Theme, color: ThemeColor, text: string): string {
+	const fg = theme.getFgAnsi(color);
+	const fill = fg.replace(/\x1b\[38;/, "\x1b[48;");
+	if (fill === fg) return theme.inverse(theme.fg(color, theme.bold(` ${text} `)));
+	return `${fill}${theme.getContrastFgAnsi(color)}\x1b[1m ${text} \x1b[0m`;
 }
 
 interface CallState {
@@ -768,7 +782,9 @@ export class ToolRows {
 	private label(call: CallState, theme: Theme, width = 0): string {
 		const label = callLabel(call.name ?? "tool", call.args);
 		const color = call.result?.isError ? "error" : (ToolColor[call.name ?? ""] ?? "toolTitle");
-		return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
+		const pad = " ".repeat(Math.max(0, width - label.length));
+		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label)) + pad;
+		return pill(theme, color, label.toUpperCase()) + pad;
 	}
 
 	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed. */
