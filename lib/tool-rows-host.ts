@@ -23,7 +23,7 @@ import {
 	callLabel,
 	callPrompt,
 	callSubject,
-	cleanLines,
+	toolBullets,
 	fallbackLine,
 	MaxFullLineLength,
 	outputText,
@@ -35,6 +35,7 @@ import {
 	withoutLabel,
 	withTone,
 } from "./tool-rows";
+import { taskCardBody, type TaskDetails } from "./task-card";
 
 /*
  * Tool rows draw a run of consecutive tool calls from its first block (the head); the run's other
@@ -47,7 +48,7 @@ import {
  * prototype holds at call time, so other hydemods wrappers on the same prototypes keep working.
  */
 
-type ResultLike = { content?: unknown; isError?: boolean; toolName?: string };
+type ResultLike = { content?: unknown; details?: unknown; isError?: boolean; toolName?: string };
 type ReadEntries = ReadonlyMap<string, { args: unknown; result?: ResultLike }>;
 
 export interface ToolRowsHost {
@@ -65,6 +66,8 @@ export interface ToolRowsHost {
 	lookupCall(id: string): { name: string; args: unknown } | undefined;
 	/** The judge that decides whether an intent says enough, or undefined when none is available. */
 	judge(): Judge | undefined;
+	/** Whether the knowledge wiki has a page on a row's subject (`gallery.ts`, a skill name); such rows get a badge. */
+	knows?(subject: string): boolean;
 }
 
 /**
@@ -87,6 +90,8 @@ interface CallState {
 	partial: boolean;
 	sealed: boolean;
 	frame?: number;
+	/** The steps before this call in its run, set as the run is read; part of the line request. */
+	earlier?: readonly string[];
 }
 
 interface BlockState {
@@ -123,10 +128,8 @@ interface Plan {
 
 /** How long a head waits for its model lines before it lets the transcript retire it. */
 const HoldMs = 4_000;
-/** Tools whose call changes files: a closed group lists these calls' lines until the model's items land. */
-const ChangeTools: Record<string, true> = { edit: true, write: true, ast_edit: true, notebook_edit: true };
-/** Group mode: how many decisions, pivots, or changes a closed burst lists. */
-const MaxRunItems = 3;
+/** Marks a row whose subject has a page in the knowledge wiki. */
+const WikiBadge = "◆";
 /**
  * Each tool's label colour, from theme tokens so it follows the theme. Themes have few distinct
  * hues, so the frequent tools (read, grep, glob, find, edit) get different ones and rarer tools share.
@@ -654,9 +657,10 @@ export class ToolRows {
 	 */
 	private callText(call: CallState): CallText | undefined {
 		if (!call.name || call.args === undefined) return undefined;
-		if (!titlesFromOutput(call.name)) return { name: call.name, args: call.args };
+		const earlier = call.earlier?.length ? { earlier: call.earlier } : {};
+		if (!titlesFromOutput(call.name)) return { name: call.name, args: call.args, ...earlier };
 		if (!call.result || call.partial || call.result.isError) return undefined;
-		return { name: call.name, args: call.args, output: outputText(call.result.content) };
+		return { name: call.name, args: call.args, output: outputText(call.result.content), ...earlier };
 	}
 
 	private lineKey(call: CallState): string | undefined {
@@ -712,9 +716,8 @@ export class ToolRows {
 		}
 		const calls = this.runCalls(run.tools);
 		if (calls.length === 0) return true;
-		const lines = calls.map(call => this.stepLine(call));
 		if (this.host.mode() === "group") {
-			const key = this.ensureSummary(state, lines);
+			const key = this.ensureSummary(state, calls);
 			if (this.lines.get(key) !== undefined) return true;
 			const asked = this.lines.requested(key);
 			return asked === undefined || now - asked >= HoldMs;
@@ -729,13 +732,29 @@ export class ToolRows {
 		const calls = this.runCalls(run.tools);
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
-		if (this.host.mode() === "group") return this.groupRows(state, calls, run.closed, theme, width).map(row => truncateToWidth(row, width));
+		// Group mode lists a burst call by call while it runs; once it ends, the summary bullets replace the calls.
+		if (this.host.mode() === "group" && run.closed && !calls.some(call => this.running(call))) {
+			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));
+		}
 		const titles = calls.map(call => this.toned(call, this.title(call)));
 		const labelWidth = Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length));
 		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
-		const fit = { width, subjectWidth: Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))) };
-		return calls.map((call, index) => truncateToWidth(this.callRow(call, titles[index]!, subjects[index], labelWidth, titleWidth, theme, fit), width));
+		const known = (subject: string) => visibleWidth(subject) + (this.host.knows?.(subject) ? visibleWidth(WikiBadge) + 1 : 0);
+		const fit = { width, subjectWidth: Math.max(0, ...subjects.map(subject => (subject ? known(subject) : 0))) };
+		return calls.flatMap((call, index) => [
+			truncateToWidth(this.callRow(call, titles[index]!, subjects[index], labelWidth, titleWidth, theme, fit), width),
+			...this.taskFooter(call, theme, width),
+		]);
+	}
+
+	/** A task call's subagent footer under its row: OMP's compact agent rows, indented; empty for other calls or before progress arrives. */
+	private taskFooter(call: CallState, theme: Theme, width: number): string[] {
+		if (call.name !== "task") return [];
+		const indent = "    ";
+		const room = Number.isFinite(width) ? Math.max(20, width - indent.length) : 100;
+		const body = taskCardBody(call.result?.details as TaskDetails | undefined, { expanded: false, width: room, nowMs: Date.now() }, theme);
+		return (body?.lines ?? []).map(line => truncateToWidth(indent + line, Number.isFinite(width) ? width : Infinity));
 	}
 
 	/** A finished call's settled title, with an Elcor tone label on some rows. Group rows and step lines never get one. */
@@ -744,11 +763,20 @@ export class ToolRows {
 		return { ...title, text: withTone(title.text, { id: call.id, name: call.name ?? "", args: call.args, failed: call.result.isError === true }) };
 	}
 
+	/** The run's calls in order, each told the stable steps just before it, so its line request has context. */
 	private runCalls(tools: readonly Component[]): CallState[] {
-		return tools.flatMap(member => {
+		const calls = tools.flatMap(member => {
 			const memberState = stateOf(member);
 			return memberState && memberState.visible ? this.callsOf(member, memberState) : [];
 		});
+		const steps = calls.map(call => {
+			const text = [callSubject(call.name ?? "", call.args), fallbackLine(call.args)].filter(Boolean).join(" ");
+			return `${callLabel(call.name ?? "tool", call.args)}: ${text}`.trim();
+		});
+		calls.forEach((call, index) => {
+			call.earlier = steps.slice(Math.max(0, index - 3), index);
+		});
+		return calls;
 	}
 
 	/** One step as the group summary reads it; a failed step says so, since failures often mark a pivot. */
@@ -759,12 +787,13 @@ export class ToolRows {
 		return text ? `${label}: ${text}` : label;
 	}
 
-	/** Group mode asks for the summary once, from the steps as they read when the run closed. */
-	private ensureSummary(state: BlockState, lines: readonly string[]): string {
+	/** Group mode asks for the summary once, from the steps as they read when the run closed: one item per distinct tool label. */
+	private ensureSummary(state: BlockState, calls: readonly CallState[]): string {
 		if (state.summaryKey === undefined) {
-			const prompt = runPrompt(lines);
+			const prompt = runPrompt(calls.map(call => this.stepLine(call)));
+			const labels = [...new Set(calls.map(call => callLabel(call.name ?? "tool", call.args)))];
 			state.summaryKey = `run:${prompt}`;
-			this.lines.request(state.summaryKey, RunSystemPrompt, prompt, Date.now(), text => cleanLines(text, MaxRunItems, MaxFullLineLength));
+			this.lines.request(state.summaryKey, RunSystemPrompt, prompt, Date.now(), text => toolBullets(text, labels));
 		}
 		return state.summaryKey;
 	}
@@ -786,10 +815,11 @@ export class ToolRows {
 		return pill(theme, color, label.toUpperCase()) + pad;
 	}
 
-	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed. */
+	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed; a subject the wiki knows leads with a badge. */
 	private subject(subject: string, theme: Theme): string {
 		const selector = /:[\d+,-]+$/.exec(subject)?.[0] ?? "";
-		return `${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
+		const badge = this.host.knows?.(subject) ? `${theme.fg("accent", WikiBadge)} ` : "";
+		return `${badge}${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
 	}
 
 	/** A settled title in muted text with its code words in body text, its tone label dim italic; a fallback (intent) title is dim italic. */
@@ -821,43 +851,36 @@ export class ToolRows {
 	}
 
 	/**
-	 * A closed burst: a status row (glyph, call count, failures), then its biggest decisions, pivots, or
-	 * changes as up to three bullets in place of the calls; a long bullet wraps under its own text.
-	 * A live burst: one row naming the latest call.
+	 * A closed burst: a status row (glyph, call count, failures), then one bullet per distinct tool, in
+	 * first-use order: the tool's label, then what the agent used it for and what came of it. Until the
+	 * model's bullets land (or if it is slow or down), a tool's bullet is the title of its last settled
+	 * call. A long bullet wraps under its own text; a Task bullet keeps its calls' subagent footers.
 	 */
-	private groupRows(state: BlockState, calls: CallState[], closed: boolean, theme: Theme, width = Infinity): string[] {
+	private groupRows(state: BlockState, calls: CallState[], theme: Theme, width = Infinity): string[] {
 		const failed = calls.filter(call => call.result?.isError).length;
-		const live = calls.find(call => this.running(call));
-		if (closed && !live) this.ensureSummary(state, calls.map(call => this.stepLine(call)));
-		const summary = state.summaryKey ? this.lines.get(state.summaryKey) : undefined;
+		const summary = this.lines.get(this.ensureSummary(state, calls));
 		const separator = theme.fg("dim", " · ");
 		const count = theme.fg("dim", `${calls.length} ${calls.length === 1 ? "call" : "calls"}`);
 		const failures = failed > 0 ? `${separator}${theme.fg("error", `${failed} failed`)}` : "";
-		const glyph = live ? this.glyph(live, theme) : failed > 0 ? theme.fg("error", theme.status.error) : theme.fg("success", theme.status.success);
-		if (closed && !live) {
-			// The model's items once they land; until then (or if the model is slow or down and the row has
-			// gone to scrollback) the agent's own lines for its last changes, else for its last step.
-			let items = summary ? summary.split("\n") : [];
-			if (items.length === 0) {
-				const settled = calls.map(call => ({ call, title: this.title(call) })).filter(({ title }) => title.settled && title.text);
-				const changes = settled.filter(({ call }) => ChangeTools[call.name ?? ""]);
-				items = (changes.length ? changes.slice(-MaxRunItems) : settled.slice(-1)).map(({ title }) => title.text);
-			}
-			const bullet = theme.fg("dim", "•");
-			const indent = "    ";
-			const wrapped = items.flatMap(item => {
-				const body = this.body({ text: item, settled: true }, theme);
-				const lines = Number.isFinite(width) ? wrapTextWithAnsi(body, Math.max(1, width - indent.length)) : [body];
-				return lines.map((line, index) => `${index === 0 ? `  ${bullet} ` : indent}${line}`);
-			});
-			return [`${glyph} ${count}${failures}`, ...wrapped];
+		const glyph = failed > 0 ? theme.fg("error", theme.status.error) : theme.fg("success", theme.status.success);
+		const byLabel = new Map<string, CallState[]>();
+		for (const call of calls) {
+			const label = callLabel(call.name ?? "tool", call.args);
+			byLabel.set(label, [...(byLabel.get(label) ?? []), call]);
 		}
-		const latest = live ?? calls[calls.length - 1]!;
-		const subject = callSubject(latest.name ?? "", latest.args);
-		const title = this.title(latest);
-		const parts = [this.label(latest, theme)];
-		if (subject) parts.push(this.subject(subject, theme));
-		if (title.text) parts.push(this.body(title, theme));
-		return [`${glyph} ${parts.join(" ")}${separator}${count}${failures}`];
+		const items = new Map((summary ?? "").split("\n").filter(Boolean).map(line => [line.slice(0, line.indexOf(": ")), line.slice(line.indexOf(": ") + 2)] as const));
+		const bullet = theme.fg("dim", "•");
+		const indent = "    ";
+		const rows = [`${glyph} ${count}${failures}`];
+		for (const [label, group] of byLabel) {
+			const last = group[group.length - 1]!;
+			const text = items.get(label) ?? [...group].reverse().map(call => this.title(call)).find(title => title.settled && title.text)?.text ?? "";
+			const head = this.label(last, theme);
+			const body = text ? `${head} ${this.body({ text, settled: true }, theme)}` : head;
+			const lines = Number.isFinite(width) ? wrapTextWithAnsi(body, Math.max(1, width - indent.length)) : [body];
+			rows.push(...lines.map((line, index) => `${index === 0 ? `  ${bullet} ` : indent}${line}`));
+			for (const call of group) rows.push(...this.taskFooter(call, theme, width));
+		}
+		return rows;
 	}
 }

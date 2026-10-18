@@ -42,6 +42,7 @@ import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
 import { RunSystemPrompt, TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
 import { ToolRows } from "./lib/tool-rows-host";
+import { WikiIndex } from "./lib/wiki-index";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, enumSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
@@ -291,6 +292,12 @@ const toolPillsSetting = booleanSetting(
 	"Tool label pills",
 	"Draw each tool row's label as a pill: upper case, bold, the tool's colour as the fill, and black or white text by brightness.",
 	false,
+);
+const wikiBadgesSetting = booleanSetting(
+	"wiki-badges",
+	"Wiki badges on tool rows",
+	"Mark a tool row with ◆ when the knowledge wiki (~/.llm-wiki, or .llm-wiki in the working folder) has a page whose title, slug or tags name the row's file or skill.",
+	true,
 );
 
 type ToolDisplayState = { collapsedLines: number; cardsOn: boolean };
@@ -2119,17 +2126,20 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const localLine: Complete = async (system, prompt, signal) => {
 		const model = lastCtx?.modelRegistry.find("local", readSetting(toolRowsModelSetting).trim());
 		if (!model) return undefined;
-		// A run summary lists up to three items; a call line is one phrase.
-		const maxTokens = system === RunSystemPrompt ? 120 : 40;
+		// A run summary has one line per distinct tool; a call line is one phrase.
+		const maxTokens = system === RunSystemPrompt ? 240 : 40;
 		const response = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { signal, maxTokens });
 		if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
 		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
 	};
 	let rowsJudge: { ctx: ExtensionContext; judge: Judge } | undefined;
+	// The personal vault, then a project vault in the working folder, as llm-wiki keeps them.
+	const wikiIndex = new WikiIndex(() => [resolve(homedir(), ".llm-wiki/meta/registry.json"), resolve(lastCtx?.cwd ?? process.cwd(), ".llm-wiki/meta/registry.json")]);
 	const toolRows = new ToolRows({
 		mode: () => readSetting(toolRowsSetting),
 		expanded: () => (lastCtx?.hasUI ? lastCtx.ui.getToolsExpanded() : false),
 		pills: () => readSetting(toolPillsSetting),
+		knows: subject => readSetting(wikiBadgesSetting) && wikiIndex.knows(subject),
 		theme: () => uiTheme,
 		complete: localLine,
 		repaint: () => { if (lastCtx) repaintToolCards(lastCtx); },
@@ -2146,6 +2156,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	watchSetting(toolRowsSetting, () => toolRows.refresh());
 	watchSetting(toolRowsModelSetting, () => toolRows.reset());
 	watchSetting(toolPillsSetting, () => toolRows.refresh());
+	watchSetting(wikiBadgesSetting, () => toolRows.refresh());
 	pi.on("tool_execution_start", event => {
 		// OMP moves the agent's `i` out of the args into `intent` before the call runs.
 		const args = event.intent && event.args && typeof event.args === "object" ? { ...event.args, i: event.intent } : event.args;

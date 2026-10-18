@@ -149,7 +149,7 @@ const judged = async (draw: () => unknown) => {
 	await settle();
 };
 
-function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0, pills = false) {
+function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0, pills = false, knows?: (subject: string) => boolean) {
 	const judgeStates: unknown[] = [];
 	const calls = new Map<string, { name: string; args: unknown }>();
 	const readGroups = new Map<object, Map<string, { args: unknown; result?: { content: unknown[] } }>>();
@@ -157,9 +157,10 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		mode: () => mode.value,
 		expanded: () => false,
 		pills: () => pills,
+		knows,
 		theme: () => theme,
 		complete: reply ?? (async (system, prompt) => {
-			if (system.includes("burst")) return "1. Surveyed the sample project\n- Listed the files\nSurveyed the sample project\nChose to read a.ts first\nKept a fourth item";
+			if (system.includes("burst")) return "1. Ls: Surveyed the sample project\n- Read: Chose to read a.ts first\nLs: Listed the files\nGrep: Kept a stray item";
 			const { tool } = JSON.parse(prompt);
 			return tool === "read" ? "wrong.ts: render draws rows; plan groups runs" : `Inspect with ${tool}`;
 		}),
@@ -358,19 +359,20 @@ test("a call with no subject column keeps the model's filename lead", async () =
 	}
 });
 
-test("the head holds its place until the run closes and its summary lands, then keeps that row in scrollback", async () => {
+test("a live group lists its calls line by line, then the head holds until its per-tool bullets land and keeps them in scrollback", async () => {
 	const mode = { value: "group" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode);
 	try {
 		const head = tool("bash", { command: "ls", i: "Listing files" }, "a");
 		tool("read", { path: "src/a.ts", i: "Reading a.ts" }, "b");
 		await settle();
+		expect(view()).toEqual(["✔ Ls    Listing files", "✔ Read  Reading a.ts   a.ts"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		transcript.addChild(new Text("reply", 0, 0));
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		await settle();
-		// The model's reply keeps three distinct items, without its list markers.
-		const rows = ["✔ 2 calls", "  • Surveyed the sample project", "  • Listed the files", "  • Chose to read a.ts first"];
+		// One bullet per distinct tool in first-use order; the first line for a label wins, unknown labels drop.
+		const rows = ["✔ 2 calls", "  • Ls Surveyed the sample project", "  • Read Chose to read a.ts first"];
 		expect(view()).toEqual([...rows, "", "reply"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(true);
 		const batch = transcript.peekFinalizedBatch(100, 1);
@@ -384,7 +386,7 @@ test("the head holds its place until the run closes and its summary lands, then 
 	}
 });
 
-test("a closed group without the model's items lists the agent's lines for its last changes", async () => {
+test("a closed group without the model's bullets shows each tool's last settled title", async () => {
 	const mode = { value: "group" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode, async () => "");
 	try {
@@ -394,7 +396,7 @@ test("a closed group without the model's items lists the agent's lines for its l
 		tool("edit", { input: "[src/b.ts#3C4D]\nPUT 1.=1:\n+y", i: "Making b import x" }, "d");
 		transcript.addChild(new Text("reply", 0, 0));
 		await settle();
-		expect(view().slice(0, 3)).toEqual(["✔ 4 calls", "  • Making a export x", "  • Making b import x"]);
+		expect(view().slice(0, 4)).toEqual(["✔ 4 calls", "  • Read Understanding the a module", "  • Edit Making b import x", "  • Bun Running the tests"]);
 	} finally {
 		uninstall();
 	}
@@ -402,19 +404,13 @@ test("a closed group without the model's items lists the agent's lines for its l
 
 test("a group bullet wider than the pane wraps under its own text instead of being cut", async () => {
 	const mode = { value: "group" as ToolRowsMode };
-	const { uninstall, transcript, tool } = setup(mode, async () => "Moved the file column last so every row lines up\nKept it");
+	const { uninstall, transcript, tool } = setup(mode, async () => "Read: Moved the file column last so every row lines up\nRead: Kept it");
 	try {
 		tool("read", { path: "src/a.ts", i: "Understanding the a module" }, "a");
 		transcript.addChild(new Text("reply", 0, 0));
 		transcript.renderViewport(30, 30, frame);
 		await settle();
-		expect(plain(transcript.renderViewport(30, 30, frame)).slice(0, 5)).toEqual([
-			"✔ 1 call",
-			"  • Moved the file column last",
-			"    so every row lines up",
-			"  • Kept it",
-			"",
-		]);
+		expect(plain(transcript.renderViewport(30, 30, frame)).slice(0, 4)).toEqual(["✔ 1 call", "  • Read Moved the file column", "    last so every row lines up", ""]);
 	} finally {
 		uninstall();
 	}
@@ -423,7 +419,7 @@ test("a group bullet wider than the pane wraps under its own text instead of bei
 test("a group bullet longer than a call line keeps every word and wraps under its own text", async () => {
 	const mode = { value: "group" as ToolRowsMode };
 	const long = "Moved the file column to the end of every row so that the files line up under the longest status line in the batch";
-	const { uninstall, transcript, tool } = setup(mode, async () => long);
+	const { uninstall, transcript, tool } = setup(mode, async () => `Read: ${long}`);
 	try {
 		tool("read", { path: "src/a.ts", i: "Understanding the a module" }, "a");
 		transcript.addChild(new Text("reply", 0, 0));
@@ -432,9 +428,60 @@ test("a group bullet longer than a call line keeps every word and wraps under it
 		const rows = plain(transcript.renderViewport(40, 30, frame));
 		const bullet = rows.slice(1, rows.indexOf(""));
 		expect(long.length).toBeGreaterThan(96);
-		expect(bullet[0]).toStartWith("  • Moved");
+		expect(bullet[0]).toStartWith("  • Read Moved");
 		expect(bullet.slice(1).every(row => /^ {4}\S/.test(row))).toBe(true);
-		expect(bullet.map(row => row.slice(4)).join(" ")).toBe(long);
+		expect(bullet.map(row => row.slice(4)).join(" ")).toBe(`Read ${long}`);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a task row names its agents and keeps the subagent footer under it", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, view } = setup(mode, async () => "");
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		const args = { tasks: [{ name: "AuthRefactor", task: "split refresh" }, { name: "Docs", task: "document it" }], i: "Splitting the auth refresh path" };
+		const task = tool("task", args, "a");
+		const progress = [{ id: "0-AuthRefactor", status: "running", task: "t", description: "split the refresh path", recentTools: [], toolCount: 2, requests: 3, cost: 0, durationMs: 0 }];
+		task.updateResult({ content: [], details: { progress } }, true, "a");
+		const rows = view().slice(2);
+		expect(rows[0]).toMatch(/^. Task  Splitting the auth refresh path  AuthRefactor \+1$/);
+		expect(rows[1]).toStartWith("    ◐ 1 running");
+		expect(rows[2]).toContain("AuthRefactor");
+		expect(rows[2]).toStartWith("    ");
+	} finally {
+		uninstall();
+	}
+});
+
+test("a row whose subject the wiki knows leads its subject with a badge, and the column stays aligned", () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, view } = setup(mode, async () => "", undefined, false, subject => subject === "gallery.ts");
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		tool("read", { path: "lib/gallery.ts", i: "Seeing the gallery" }, "a");
+		tool("read", { path: "lib/a.ts", i: "Seeing a" }, "b");
+		expect(view().slice(2)).toEqual(["✔ Read  Seeing the gallery  ◆ gallery.ts", "✔ Read  Seeing a            a.ts"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a call's line request names the agent's intent and the steps before it", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const prompts: string[] = [];
+	const { uninstall, transcript, tool, view } = setup(mode, async (_system, prompt) => (prompts.push(prompt), ""));
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "a");
+		tool("bash", { command: "git status" }, "b");
+		await judged(view);
+		await judged(view);
+		const second = prompts.map(prompt => JSON.parse(prompt)).find(prompt => prompt.tool === "bash");
+		expect(second).toEqual({ tool: "bash", args: { command: "git status" }, earlier: ["Grep: Finding TODOs"] });
+		const first = prompts.map(prompt => JSON.parse(prompt)).find(prompt => prompt.tool === "grep");
+		expect(first).toEqual({ tool: "grep", intent: "Finding TODOs", args: { pattern: "TODO" } });
 	} finally {
 		uninstall();
 	}

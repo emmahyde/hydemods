@@ -25,12 +25,17 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - `wait` collapses to one status line with job counts and names (for example `✓ Wait · 1 completed GatePoll`). Failures lead and turn red. Ctrl+O shows the full snapshot; the model always gets the full result.
 - **Tool rows.** `hydemods.toolRows` in `/settings` (Tools) picks how tool calls draw; Ctrl+N cycles it (cards → lines → group) and flashes which one is on. Ctrl+O shows the full cards in any mode.
   - `lines`: one row per call, on adjacent rows with no gap, in three aligned columns: the tool, a status line, and the file in the path colour (`• Read  Reading the invoice totals  invoice.rb:40-80`). The file comes last, so a call without one leaves no gap. Each tool has its own label colour from the theme. A bash row shows the program its command runs (`• Git  Checking recent commits`), past any leading `cd dir &&`. The status line is the agent's intent (`i`) exactly as written. A call without one gets a line from a local model, in the agent's voice and never naming the tool; until it lands, the row shows the call's main argument in dim italics (for a `git commit -m`, only the commit message).
-  - `group` (default): one row per burst of calls. While the agent works it names the latest call. When the agent replies, or you send a message, the calls give way to a status row and up to three bullets: the burst's biggest decisions, pivots, or changes, most important first. A long bullet wraps under its own text. A local model writes them from the steps, with the most weight on edits, failed steps, and the last steps. Until they land, or if the model is down, the bullets are the agent's lines for its last three edits, or else for its last step.
+  - `group` (default): while the agent works, a burst lists its calls one per row, as in `lines`. When the agent replies, or you send a message, the calls give way to a status row and one bullet per distinct tool, in the order the tools were first used: the tool, what the agent used it for, and what came of it. A long bullet wraps under its own text. A local model writes the bullets from the steps as they stand when the burst ends, with the most weight on edits, failed steps, and the last steps. Until they land, or if the model is down, each tool's bullet is the line of its last call.
     ```text
     ✓ 26 calls · 4 failed
-      • Found that a replay in cards mode dropped all but the first card
-      • Made a frozen head draw every card of its run
+      • Read Traced how a run commits and found replays dropped cards
+      • Bun Ran the replay test, which failed, then passed after the fix
+      • Edit Made a frozen head draw every card of its run
     ```
+  - Task rows read `Task  <what the subagents were sent to do>  <first agent> +N`, with the subagent footer (state digest and one row per agent) under the row. In `group` mode the footer stays under the Task bullet.
+  - Eval rows show the first file the code names (a quoted path with an extension, or a `%load` target) in the file column.
+  - The local model gets the agent's intent as a named `intent` field, and the up to three steps before the call as context.
+  - `hydemods.wikiBadges` (on by default) puts `◆` before a row's file when the knowledge wiki (`~/.llm-wiki`, or `.llm-wiki` in the working folder) has a page whose title, slug or tags name that file's stem or the skill. Stems shorter than 4 letters never match.
   - `cards`: OMP's tool cards, unchanged.
   - A run spans the thinking and harness notices (status lines, reminders, extension messages) between its calls; they hide inside the run. A reply or a prompt ends it.
   - A run's rows reach scrollback only once the run ends and its lines land (at most 4 seconds after), so scrollback keeps the finished text.
