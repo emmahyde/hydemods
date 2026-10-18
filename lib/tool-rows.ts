@@ -101,10 +101,22 @@ export function fallbackLine(args: unknown): string {
  for (const key of ["i", "title", "command", "path", "pattern", "query", "url", "input", "code"]) {
   const value = record[key];
   if (typeof value !== "string") continue;
-  const line = stripControls(value).split(/\r?\n/, 1)[0]!.replace(/\s+/g, " ").trim();
+  const text = key === "command" ? (commitMessage(value) ?? value) : value;
+  const line = stripControls(text).split(/\r?\n/, 1)[0]!.replace(/\s+/g, " ").trim();
   if (line) return line.length > MaxLineLength ? `${line.slice(0, MaxLineLength - 1)}…` : line;
  }
  return "";
+}
+
+/**
+ * The message of the first `git commit -m "…"` (or `-am`, `--message=`) in a shell command, so
+ * `git add a.ts && git commit -q -m "fix: x"` → `fix: x`. Undefined when the command commits no quoted message.
+ */
+export function commitMessage(command: string): string | undefined {
+ const found = /\bgit\s+(?:-C\s+\S+\s+)?commit\b[^\n;&|]*?\s(?:-[A-Za-z]*m\s*|--message[=\s]\s*)(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/.exec(command);
+ if (!found) return undefined;
+ const message = found[1] !== undefined ? found[1].replace(/\\(["\\$`])/g, "$1") : found[2]!;
+ return message.trim() ? message : undefined;
 }
 
 /** Tool label as OMP titles it: `web_search` → `Web Search`. MCP tools drop their `mcp__server_` prefix. */

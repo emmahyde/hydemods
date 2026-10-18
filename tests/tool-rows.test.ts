@@ -4,7 +4,7 @@ import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-containe
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
-import { callLabel, callSubject, cleanLine, commandName, fallbackLine, planRuns, toolLabel, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
+import { callLabel, callSubject, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
 import { ToolRows } from "../lib/tool-rows-host";
 
 test("a run spans quiet blocks between its calls but leaves trailing quiet blocks outside", () => {
@@ -48,6 +48,17 @@ test("the fallback line prefers the agent's intent, then the call's main argumen
 	expect(fallbackLine({ language: "py", title: "Loading rows", code: "x" })).toBe("Loading rows");
 	expect(fallbackLine({ command: "git status\ngit log" })).toBe("git status");
 	expect(fallbackLine(undefined)).toBe("");
+});
+
+test("a git commit row falls back to the commit message, not the whole command", () => {
+	expect(fallbackLine({ command: 'git add index.ts && git commit -q -m "feat(cards): toggle with Ctrl+Shift+T" && git push -q' })).toBe("feat(cards): toggle with Ctrl+Shift+T");
+	expect(commitMessage("git commit -am 'fix: typo'")).toBe("fix: typo");
+	expect(commitMessage('git -C repo commit --message="say \\"hi\\""')).toBe('say "hi"');
+	expect(commitMessage('git commit -m "subject\n\nbody"')).toBe("subject\n\nbody");
+	expect(fallbackLine({ command: 'git commit -m "subject\n\nbody"' })).toBe("subject");
+	expect(commitMessage("git commit --amend --no-edit")).toBeUndefined();
+	expect(commitMessage('echo "-m x" && git status')).toBeUndefined();
+	expect(fallbackLine({ command: "git commit" })).toBe("git commit");
 });
 
 test("tool labels title-case names and drop the MCP server prefix", () => {
