@@ -28,7 +28,7 @@ const PROC_SCHEME = "proc://";
 const SUMMARY_MAX = 90;
 
 /** First non-blank line, whitespace-collapsed and cut to fit one drawer description row. */
-function summarize(text: string | undefined): string | undefined {
+export function summarize(text: string | undefined): string | undefined {
 	if (!text) return undefined;
 	const line = text.split(/\r?\n/).find(part => part.trim().length > 0);
 	if (!line) return undefined;

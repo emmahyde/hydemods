@@ -69,14 +69,13 @@ export interface ToolRowsHost {
 
 /**
  * `text` on a solid fill of the theme colour `color`, one space each side, bold, with near-black or
- * near-white text by the fill's brightness. A colour the theme leaves to the terminal default has no
- * fill to read, so that pill is drawn reversed instead.
+ * near-white text by the fill's brightness. Only a truecolour fill has a brightness to read; any other
+ * colour (256-palette or terminal default) is drawn reversed instead.
  */
 function pill(theme: Theme, color: ThemeColor, text: string): string {
 	const fg = theme.getFgAnsi(color);
-	const fill = fg.replace(/\x1b\[38;/, "\x1b[48;");
-	if (fill === fg) return theme.inverse(theme.fg(color, theme.bold(` ${text} `)));
-	return `${fill}${theme.getContrastFgAnsi(color)}\x1b[1m ${text} \x1b[0m`;
+	if (!fg.includes("\x1b[38;2;")) return theme.inverse(theme.fg(color, theme.bold(` ${text} `)));
+	return `${fg.replace("\x1b[38;", "\x1b[48;")}${theme.getContrastFgAnsi(color)}\x1b[1m ${text} \x1b[22;39;49m`;
 }
 
 interface CallState {

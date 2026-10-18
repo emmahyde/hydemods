@@ -149,13 +149,14 @@ const judged = async (draw: () => unknown) => {
 	await settle();
 };
 
-function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0) {
+function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0, pills = false) {
 	const judgeStates: unknown[] = [];
 	const calls = new Map<string, { name: string; args: unknown }>();
 	const readGroups = new Map<object, Map<string, { args: unknown; result?: { content: unknown[] } }>>();
 	const rows = new ToolRows({
 		mode: () => mode.value,
 		expanded: () => false,
+		pills: () => pills,
 		theme: () => theme,
 		complete: reply ?? (async (system, prompt) => {
 			if (system.includes("burst")) return "1. Surveyed the sample project\n- Listed the files\nSurveyed the sample project\nChose to read a.ts first\nKept a fourth item";
@@ -186,7 +187,7 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		component.updateResult({ content: [{ type: "text", text: "line one\nline two" }] }, false, id);
 		return component;
 	};
-	return { rows, uninstall, transcript, tool, calls, readGroups, judgeStates, view: () => plain(transcript.renderViewport(100, 30, frame)) };
+	return { rows, uninstall, transcript, tool, calls, readGroups, judgeStates, view: () => plain(transcript.renderViewport(100, 30, frame)), raw: () => transcript.renderViewport(100, 30, frame) };
 }
 
 beforeAll(async () => {
@@ -206,6 +207,20 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		expect(view()).toEqual(["prompt", "", "✔ Git   git status", "✔ Grep  Finding TODOs"]);
 		await judged(view);
 		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Inspect with grep"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("pills upper-case each label on a fill, keep titles aligned, and reset only what they set", () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, tool, view, raw } = setup(mode, undefined, undefined, true);
+	try {
+		tool("read", { path: "a.ts", i: "Reading a" }, "a");
+		tool("bash", { command: "ls", i: "Listing files" }, "b");
+		expect(view()).toEqual(["✔  READ   Reading a      a.ts", "✔  LS     Listing files"]);
+		// Truecolour: a fill with contrast text, closed by resetting only bold and colours. Otherwise reversed.
+		expect(raw()[0]).toMatch(/\x1b\[48;2;[\d;]+m\x1b\[38;2;[\d;]+m\x1b\[1m READ \x1b\[22;39;49m|\x1b\[7m.* READ /);
 	} finally {
 		uninstall();
 	}

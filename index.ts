@@ -35,7 +35,7 @@ import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-co
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskDisabledAgents } from "@oh-my-pi/pi-coding-agent/task/settings";
-import { agentSource, expandAgentMentions, withAgentDrawer } from "./lib/agent-mentions";
+import { agentHint, agentSource, hasMention, mentionedAgents, withAgentDrawer } from "./lib/agent-mentions";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText, separateGeneratedNoticeFooter, stripGeneratedNoticeFooter } from "./lib/tool-output";
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
@@ -2500,26 +2500,45 @@ export default function hydemods(pi: ExtensionAPI): void {
 	};
 	pi.on("session_shutdown", async () => { linkServer?.stop(); linkServer = undefined; });
 	const disabledAgents = (): readonly string[] => (isSettingsInitialized() ? cfgTaskDisabledAgents.get(hostSettings) : []);
-	const agentsFor = (ctx: ExtensionContext) => agentSource(() => ctx.cwd, disabledAgents);
-	pi.on("input", async (event, ctx) => {
-		if (!isTweakEnabled("agent-mentions") || !event.text.includes("@@")) return;
-		const known = new Set((await agentsFor(ctx)()).map(a => a.name));
-		const text = expandAgentMentions(event.text, known);
-		return text === event.text ? undefined : { text };
+	// The newest context this session has seen: drawers installed once per UI read cwd and session from it.
+	let liveCtx: ExtensionContext | undefined;
+	const live = <T extends object>(make: (ctx: ExtensionContext) => T): T =>
+		new Proxy({} as T, {
+			get: (_, key) => {
+				const target = make(liveCtx!) as Record<PropertyKey, unknown>;
+				const value = target[key];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+	const agents = agentSource(() => liveCtx?.cwd ?? process.cwd(), disabledAgents, error => {
+		liveCtx?.ui.notify(`@@ agent list failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	});
+	pi.on("before_agent_start", async (event, ctx) => {
+		liveCtx = ctx;
+		const prompt = typeof event.prompt === "string" ? event.prompt : "";
+		if (!isTweakEnabled("agent-mentions") || !hasMention(prompt)) return;
+		const names = mentionedAgents(prompt, await agents());
+		if (names.length === 0) return;
+		return { message: { customType: "hydemods-agent-mentions", display: true, content: agentHint(names) } };
+	});
+	const drawersInstalled = new WeakSet<object>();
 	const installDrawers = (ctx: ExtensionContext) => {
+		liveCtx = ctx;
 		helperDrawers.install(ctx);
-		if (ctx.hasUI) {
+		if (ctx.hasUI && !drawersInstalled.has(ctx.ui)) {
+			drawersInstalled.add(ctx.ui);
 			const enabled = () => isTweakEnabled("internal-url-drawers");
 			const onApplied = (item: { value: string }) => {
-				urlPreviews.showPreview(ctx, item.value.trimEnd());
+				if (liveCtx) urlPreviews.showPreview(liveCtx, item.value.trimEnd());
 			};
+			const xd = live(xdSourcesFor);
+			const proc = live(procSourcesFor);
 			ctx.ui.addAutocompleteProvider(inner => {
 				let p = withVaultDrawer(inner as unknown as EditorProvider, enabled, onApplied);
 				p = withPrDrawer(p, enabled, onApplied);
-				p = withXdDrawer(p, enabled, xdSourcesFor(ctx), onApplied);
-				p = withProcDrawer(p, enabled, procSourcesFor(ctx), onApplied);
-				p = withAgentDrawer(p, () => isTweakEnabled("agent-mentions"), agentsFor(ctx));
+				p = withXdDrawer(p, enabled, xd, onApplied);
+				p = withProcDrawer(p, enabled, proc, onApplied);
+				p = withAgentDrawer(p, () => isTweakEnabled("agent-mentions"), agents);
 				return p as unknown as typeof inner;
 			});
 		}
