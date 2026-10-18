@@ -262,7 +262,7 @@ const toolRowsSetting = enumSetting(
 	"Tool rows",
 	"How tool calls draw. cards: OMP's tool cards. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. Ctrl+O shows the cards.",
 	TOOL_ROWS_MODES,
-	"lines",
+	"group",
 );
 const toolRowsModelSetting = stringSetting(
 	"tool-rows-model",
