@@ -21,6 +21,7 @@ import {
 	callLabel,
 	callPrompt,
 	callSubject,
+	cleanLines,
 	fallbackLine,
 	outputText,
 	planRuns,
@@ -105,6 +106,10 @@ const HoldMs = 4_000;
 /** Column caps: a longer label or title pushes only its own row's later columns right. */
 const MaxLabelWidth = 12;
 const MaxTitleWidth = 56;
+/** Tools whose call changes files: a closed group lists these calls' lines until the model's items land. */
+const ChangeTools: Record<string, true> = { edit: true, write: true, ast_edit: true, notebook_edit: true };
+/** Group mode: how many decisions, pivots, or changes a closed burst lists. */
+const MaxRunItems = 3;
 /**
  * Each tool's label colour, from theme tokens so it follows the theme. Themes have few distinct
  * hues, so the frequent tools (read, grep, glob, find, edit) get different ones and rarer tools share.
@@ -686,7 +691,7 @@ export class ToolRows {
 		const calls = this.runCalls(run.tools);
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
-		if (this.host.mode() === "group") return [truncateToWidth(this.groupRow(state, calls, run.closed, theme), width)];
+		if (this.host.mode() === "group") return this.groupRows(state, calls, run.closed, theme).map(row => truncateToWidth(row, width));
 		const titles = calls.map(call => this.title(call));
 		const labelWidth = Math.min(MaxLabelWidth, Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length)));
 		const titleWidth = Math.min(MaxTitleWidth, Math.max(0, ...titles.map(title => visibleWidth(title.text))));
@@ -702,11 +707,11 @@ export class ToolRows {
 		});
 	}
 
-	/** One step as the group summary reads it. */
+	/** One step as the group summary reads it; a failed step says so, since failures often mark a pivot. */
 	private stepLine(call: CallState): string {
 		const label = callLabel(call.name ?? "tool", call.args);
 		const subject = callSubject(call.name ?? "", call.args);
-		const text = [subject, this.title(call).text].filter(Boolean).join(" ");
+		const text = [subject, this.title(call).text, call.result?.isError ? "(failed)" : ""].filter(Boolean).join(" ");
 		return text ? `${label}: ${text}` : label;
 	}
 
@@ -715,7 +720,7 @@ export class ToolRows {
 		if (state.summaryKey === undefined) {
 			const prompt = runPrompt(lines);
 			state.summaryKey = `run:${prompt}`;
-			this.lines.request(state.summaryKey, RunSystemPrompt, prompt);
+			this.lines.request(state.summaryKey, RunSystemPrompt, prompt, Date.now(), text => cleanLines(text, MaxRunItems));
 		}
 		return state.summaryKey;
 	}
@@ -762,26 +767,30 @@ export class ToolRows {
 		return parts.join("  ").trimEnd();
 	}
 
-	private groupRow(state: BlockState, calls: CallState[], closed: boolean, theme: Theme): string {
+	/**
+	 * A closed burst: a status row (glyph, call count, failures), then its biggest decisions, pivots, or
+	 * changes as up to three bullets in place of the calls. A live burst: one row naming the latest call.
+	 */
+	private groupRows(state: BlockState, calls: CallState[], closed: boolean, theme: Theme): string[] {
 		const failed = calls.filter(call => call.result?.isError).length;
 		const live = calls.find(call => this.running(call));
 		if (closed && !live) this.ensureSummary(state, calls.map(call => this.stepLine(call)));
 		const summary = state.summaryKey ? this.lines.get(state.summaryKey) : undefined;
 		const separator = theme.fg("dim", " · ");
-		const count = `${separator}${theme.fg("dim", `${calls.length} ${calls.length === 1 ? "call" : "calls"}`)}`;
+		const count = theme.fg("dim", `${calls.length} ${calls.length === 1 ? "call" : "calls"}`);
 		const failures = failed > 0 ? `${separator}${theme.fg("error", `${failed} failed`)}` : "";
 		const glyph = live ? this.glyph(live, theme) : failed > 0 ? theme.fg("error", theme.status.error) : theme.fg("success", theme.status.success);
-		if (summary) return `${glyph} ${theme.fg("toolTitle", theme.bold(summary))}${count}${failures}`;
 		if (closed && !live) {
-			const tally = new Map<string, { call: CallState; n: number }>();
-			for (const call of calls) {
-				const label = callLabel(call.name ?? "tool", call.args);
-				const entry = tally.get(label);
-				if (entry) entry.n++;
-				else tally.set(label, { call, n: 1 });
+			// The model's items once they land; until then (or if the model is slow or down and the row has
+			// gone to scrollback) the agent's own lines for its last changes, else for its last step.
+			let items = summary ? summary.split("\n") : [];
+			if (items.length === 0) {
+				const settled = calls.map(call => ({ call, title: this.title(call) })).filter(({ title }) => title.settled && title.text);
+				const changes = settled.filter(({ call }) => ChangeTools[call.name ?? ""]);
+				items = (changes.length ? changes.slice(-MaxRunItems) : settled.slice(-1)).map(({ title }) => title.text);
 			}
-			const head = [...tally.values()].map(({ call, n }) => this.label(call, theme) + (n > 1 ? theme.fg("dim", ` ×${n}`) : "")).join(theme.fg("dim", ", "));
-			return `${glyph} ${head}${count}${failures}`;
+			const bullet = theme.fg("dim", "•");
+			return [`${glyph} ${count}${failures}`, ...items.map(item => `  ${bullet} ${this.body({ text: item, settled: true }, theme)}`)];
 		}
 		const latest = live ?? calls[calls.length - 1]!;
 		const subject = callSubject(latest.name ?? "", latest.args);
@@ -789,6 +798,6 @@ export class ToolRows {
 		const parts = [this.label(latest, theme)];
 		if (subject) parts.push(this.subject(subject, theme));
 		if (title.text) parts.push(this.body(title, theme));
-		return `${glyph} ${parts.join(" ")}${count}${failures}`;
+		return [`${glyph} ${parts.join(" ")}${separator}${count}${failures}`];
 	}
 }

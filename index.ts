@@ -35,7 +35,7 @@ import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOut
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
-import { TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
+import { RunSystemPrompt, TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
 import { ToolRows } from "./lib/tool-rows-host";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
@@ -2097,7 +2097,9 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const localLine: Complete = async (system, prompt, signal) => {
 		const model = lastCtx?.modelRegistry.find("local", readSetting(toolRowsModelSetting).trim());
 		if (!model) return undefined;
-		const response = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { signal, maxTokens: 40 });
+		// A run summary lists up to three items; a call line is one phrase.
+		const maxTokens = system === RunSystemPrompt ? 120 : 40;
+		const response = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { signal, maxTokens });
 		if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
 		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
 	};

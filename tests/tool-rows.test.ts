@@ -123,7 +123,7 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		expanded: () => false,
 		theme: () => theme,
 		complete: reply ?? (async (system, prompt) => {
-			if (system.includes("burst")) return "Survey the sample project";
+			if (system.includes("burst")) return "1. Surveyed the sample project\n- Listed the files\nSurveyed the sample project\nChose to read a.ts first\nKept a fourth item";
 			const { tool } = JSON.parse(prompt);
 			return tool === "read" ? "wrong.ts: render draws rows; plan groups runs" : `Inspect with ${tool}`;
 		}),
@@ -233,14 +233,32 @@ test("the head holds its place until the run closes and its summary lands, then 
 		transcript.addChild(new Text("reply", 0, 0));
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		await settle();
-		expect(view()).toEqual(["✔ Survey the sample project · 2 calls", "", "reply"]);
+		// The model's reply keeps three distinct items, without its list markers.
+		const rows = ["✔ 2 calls", "  • Surveyed the sample project", "  • Listed the files", "  • Chose to read a.ts first"];
+		expect(view()).toEqual([...rows, "", "reply"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(true);
 		const batch = transcript.peekFinalizedBatch(100, 1);
-		expect(plain(batch?.rows ?? [])).toEqual(["✔ Survey the sample project · 2 calls", ""]);
+		expect(plain(batch?.rows ?? [])).toEqual([...rows, ""]);
 		transcript.acknowledgeFinalizedBatch(batch!.id);
 		// Switching back to cards must not redraw the absorbed call below the scrollback row.
 		mode.value = "cards";
 		expect(view()).toEqual(["reply"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a closed group without the model's items lists the agent's lines for its last changes", async () => {
+	const mode = { value: "group" as ToolRowsMode };
+	const { uninstall, transcript, tool, view } = setup(mode, async () => "");
+	try {
+		tool("read", { path: "src/a.ts", i: "Understanding the a module" }, "a");
+		tool("edit", { input: "[src/a.ts#1A2B]\nPUT 1.=1:\n+x", i: "Making a export x" }, "b");
+		tool("bash", { command: "bun test", i: "Running the tests" }, "c");
+		tool("edit", { input: "[src/b.ts#3C4D]\nPUT 1.=1:\n+y", i: "Making b import x" }, "d");
+		transcript.addChild(new Text("reply", 0, 0));
+		await settle();
+		expect(view().slice(0, 3)).toEqual(["✔ 4 calls", "  • Making a export x", "  • Making b import x"]);
 	} finally {
 		uninstall();
 	}

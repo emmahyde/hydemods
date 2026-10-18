@@ -25,7 +25,12 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - `wait` collapses to one status line with job counts and names (for example `✓ Wait · 1 completed GatePoll`). Failures lead and turn red. Ctrl+O shows the full snapshot; the model always gets the full result.
 - **Tool rows.** `hydemods.toolRows` in `/settings` (Tools) picks how tool calls draw; Ctrl+N cycles it (cards → lines → group) and flashes which one is on. Ctrl+O shows the full cards in any mode.
   - `lines`: one row per call, on adjacent rows with no gap, in three aligned columns: the tool, a status line, and the file in backticks (``• Read  Reading the invoice totals  `invoice.rb:40-80` ``). The file comes last, so a call without one leaves no gap. Each tool has its own label colour from the theme. A bash row shows the program its command runs (`• Git  Checking recent commits`), past any leading `cd dir &&`. The status line is the agent's intent (`i`) exactly as written. A call without one gets a line from a local model, in the agent's voice and never naming the tool; until it lands, the row shows the call's main argument in dim italics (for a `git commit -m`, only the commit message).
-  - `group` (default): one row per burst of calls. While the agent works it names the latest call; when the agent replies, or you send a message, a local model titles the burst (`• Tracing how sessions authenticate users · 7 calls`).
+  - `group` (default): one row per burst of calls. While the agent works it names the latest call. When the agent replies, or you send a message, the calls give way to a status row and up to three bullets: the burst's biggest decisions, pivots, or changes, most important first. A local model writes them from the steps, with the most weight on edits, failed steps, and the last steps. Until they land, or if the model is down, the bullets are the agent's lines for its last three edits, or else for its last step.
+    ```text
+    ✓ 26 calls · 4 failed
+      • Found that a replay in cards mode dropped all but the first card
+      • Made a frozen head draw every card of its run
+    ```
   - `cards`: OMP's tool cards, unchanged.
   - A run spans the thinking and harness notices (status lines, reminders, extension messages) between its calls; they hide inside the run. A reply or a prompt ends it.
   - A run's rows reach scrollback only once the run ends and its lines land (at most 4 seconds after), so scrollback keeps the finished text.
