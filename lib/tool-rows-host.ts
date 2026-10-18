@@ -256,7 +256,7 @@ export class ToolRows {
 	/* ------------------------------- adoption ------------------------------- */
 
 	private adopt(container: Container, component: Component, existing: boolean, patchedInserts?: Map<object, (component: Component, index: number) => void>): void {
-		if (!this.containerOf.has(component)) this.containerOf.set(component, container);
+		this.containerOf.set(component, container);
 		if (![...this.transcripts].some(ref => ref.deref() === container)) {
 			this.transcripts.add(new WeakRef(container));
 			this.patchInsert(container, patchedInserts);
@@ -484,8 +484,25 @@ export class ToolRows {
 	}
 
 	private roleOf(component: Component): Role | undefined {
-		const container = this.containerOf.get(component);
+		const container = this.containerFor(component);
 		return container ? this.plan(container).roles.get(component) : undefined;
+	}
+
+	/**
+	 * The transcript that holds the block now. A resumed session builds its history in one
+	 * transcript and then moves the blocks into another without addChild or insertChildAt, so the
+	 * container recorded at adoption can be stale (and empty).
+	 */
+	private containerFor(component: Component): Container | undefined {
+		const recorded = this.containerOf.get(component);
+		if (recorded?.children.includes(component)) return recorded;
+		for (const ref of this.transcripts) {
+			const container = ref.deref();
+			if (!container || container === recorded || !container.children.includes(component)) continue;
+			this.containerOf.set(component, container);
+			return container;
+		}
+		return recorded;
 	}
 
 	/** The run a tool block draws, or `null` when it draws nothing; undefined leaves the native card. */

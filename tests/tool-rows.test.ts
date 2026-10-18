@@ -154,6 +154,24 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 	}
 });
 
+test("blocks moved into another transcript without addChild still draw as rows (a resumed session)", () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool } = setup(mode);
+	try {
+		tool("bash", { command: "git status", i: "Checking status" }, "a");
+		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
+		// Resume builds the history in one transcript, then hands its blocks to the live one.
+		const live = new TranscriptContainer();
+		live.addChild(new Text("prompt", 0, 0));
+		live.children.push(...transcript.children.splice(0));
+		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", "✔ Git   Checking status", "✔ Grep  Finding TODOs"]);
+		mode.value = "cards";
+		expect(plain(live.renderViewport(100, 30, frame)).some(row => row.startsWith("✔ "))).toBe(false);
+	} finally {
+		uninstall();
+	}
+});
+
 test("lines mode aligns labels and file subjects into columns and drops the model's filename lead", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode);
