@@ -152,6 +152,16 @@ function stateOf(component: Component): BlockState | undefined {
 	return (component as Adopted)[STATE];
 }
 
+/**
+ * `next` with the agent's intent (`i`) from `prev` when `next` lacks one. OMP strips `i` from the
+ * args it hands the card once the call runs; without it the row would ask the model for a line.
+ */
+function withIntent(next: unknown, prev: unknown): unknown {
+	if (!next || typeof next !== "object" || "i" in next) return next;
+	const intent = prev && typeof prev === "object" && "i" in prev ? prev.i : undefined;
+	return typeof intent === "string" && intent ? { ...next, i: intent } : next;
+}
+
 function emptyCall(): CallState {
 	return { argsComplete: false, partial: true, sealed: false };
 }
@@ -391,7 +401,7 @@ export class ToolRows {
 		const call = state.call;
 		this.override(component, "updateArgs", base => (args: unknown, id: unknown) => {
 			this.bindId(state, id);
-			call.args = args;
+			call.args = withIntent(args, call.args);
 			this.changed(false);
 			return base(args, id);
 		});
@@ -587,11 +597,12 @@ export class ToolRows {
 		}
 		const call = state.call;
 		if (!call.id) this.pair(state);
-		if (call.id && (call.name === undefined || call.args === undefined)) {
+		const lacksIntent = !!call.args && typeof call.args === "object" && !("i" in call.args);
+		if (call.id && (call.name === undefined || call.args === undefined || lacksIntent)) {
 			const found = this.host.lookupCall(call.id);
 			if (found) {
 				call.name ??= found.name;
-				call.args ??= found.args;
+				call.args = call.args === undefined ? found.args : withIntent(call.args, found.args);
 			}
 		}
 		return [call];

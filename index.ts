@@ -2112,11 +2112,13 @@ export default function hydemods(pi: ExtensionAPI): void {
 		readEntries: group => readGroupStates.get(group)?.entries,
 		lookupCall,
 	});
-	toolRows.install();
+	let uninstallToolRows: (() => void) | undefined;
 	watchSetting(toolRowsSetting, () => toolRows.refresh());
 	watchSetting(toolRowsModelSetting, () => toolRows.reset());
 	pi.on("tool_execution_start", event => {
-		liveCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
+		// OMP moves the agent's `i` out of the args into `intent` before the call runs.
+		const args = event.intent && event.args && typeof event.args === "object" ? { ...event.args, i: event.intent } : event.args;
+		liveCalls.set(event.toolCallId, { name: event.toolName, args });
 		toolRows.noteCall(event.toolCallId);
 	});
 	pi.on("agent_start", () => toolRows.setIdle(false));
@@ -2800,6 +2802,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 		evalSummaries.clear();
 		liveCalls.clear();
 		scannedEntries = -1;
+		// Only a session with a UI owns the transcript. A task subagent loads hydemods in the same
+		// process; installing there would replace the UI session's rows with ones that can't name its calls.
+		// session_start fires before OMP replays a resumed transcript, so its blocks still adopt.
+		if (ctx.hasUI) uninstallToolRows ??= toolRows.install();
 		toolRows.reset();
 		toolRows.setIdle(true);
 		stopStallWatch?.();

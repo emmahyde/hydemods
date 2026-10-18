@@ -142,7 +142,7 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		component.updateResult({ content: [{ type: "text", text: "line one\nline two" }] }, false, id);
 		return component;
 	};
-	return { rows, uninstall, transcript, tool, view: () => plain(transcript.renderViewport(100, 30, frame)) };
+	return { rows, uninstall, transcript, tool, calls, view: () => plain(transcript.renderViewport(100, 30, frame)) };
 }
 
 beforeAll(async () => {
@@ -160,6 +160,41 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		expect(view()).toEqual(["prompt", "", "✔ Git   git status", "✔ Grep  Finding TODOs"]);
 		await settle();
 		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Finding TODOs"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a call keeps the agent's intent after OMP strips it from the args it runs with", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, calls, view } = setup(mode);
+	try {
+		// Streamed args carry `i`; the args at execution start, and the call record here, do not.
+		calls.set("a", { name: "bash", args: { command: "git status" } });
+		const streamed = new ToolExecutionComponent("bash", { command: "git status", i: "Checking status" }, {}, undefined, ui, process.cwd(), "a");
+		transcript.addChild(streamed);
+		streamed.updateArgs({ command: "git status", i: "Checking status" }, "a");
+		streamed.updateArgs({ command: "git status" }, "a");
+		streamed.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
+		await settle();
+		expect(view()).toEqual(["✔ Git  Checking status"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a card built from stripped args takes the agent's intent from the call record", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, calls, view } = setup(mode);
+	try {
+		// The live stream or session still records the intent; the card only ever saw stripped args.
+		calls.set("a", { name: "bash", args: { command: "git status", i: "Checking status" } });
+		const card = new ToolExecutionComponent("bash", { command: "git status" }, {}, undefined, ui, process.cwd(), "a");
+		transcript.addChild(card);
+		card.updateArgs({ command: "git status" }, "a");
+		card.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
+		await settle();
+		expect(view()).toEqual(["✔ Git  Checking status"]);
 	} finally {
 		uninstall();
 	}
