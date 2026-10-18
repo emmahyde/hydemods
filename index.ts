@@ -62,6 +62,10 @@ import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/sta
 import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
+import { type Candidate, formatRecommendations, recommend } from "./lib/recommend";
+import { journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
+import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import { cfgDisabledExtensions, cfgSkills } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
 type MonitorEventDetails = { spec: MonitorSpec; lines: string[] };
@@ -175,6 +179,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Gives the agent agent_model: override which model a task subagent type runs on, for the session.",
 		category: "Tools",
 		render: () => "Overrides are session-only.",
+	},
+	{
+		name: "recommend-tools",
+		title: "recommend_tools tool",
+		description: "Gives the agent recommend_tools: the judge model ranks available tools and skills for a task.",
+		category: "Tools",
+		render: () => "Each call costs one judge request per 40 candidates, billed to the session.",
 	},
 	{
 		name: "ror",
@@ -2590,6 +2601,32 @@ export default function hydemods(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerTool({
+		name: "recommend_tools",
+		label: "Recommend Tools",
+		approval: "read",
+		description: "Ask the judge model which available tools and skills fit a task. Use when starting unfamiliar work or when unsure whether a specialized tool, MCP server, or skill exists for it. Returns the strongest matches, best first, with the judge's confidence.",
+		parameters: Type.Object({
+			task: Type.String({ description: "The task in a sentence or two: what you are about to do and on what." }),
+			limit: Type.Optional(Type.Number({ description: "Maximum recommendations, default 5." })),
+			include: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("tools"), Type.Literal("skills")], { description: 'Default "all".' })),
+		}),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const include = params.include ?? "all";
+			const candidates: Candidate[] = [];
+			if (include !== "skills") {
+				const active = new Set(pi.getActiveTools());
+				for (const tool of pi.getAllTools()) if (tool.name !== "recommend_tools") candidates.push({ kind: "tool", name: tool.name, description: tool.description, inactive: !active.has(tool.name) });
+			}
+			if (include !== "tools") {
+				const { skills } = await loadSkills({ ...cfgSkills.get(hostSettings), cwd: ctx.cwd, disabledExtensions: cfgDisabledExtensions.get(hostSettings) });
+				for (const skill of skills) candidates.push({ kind: "skill", name: skill.name, description: skill.description });
+			}
+			const judge = resolveJudge({ settings: hostSettings, registry: ctx.modelRegistry, sessionModel: ctx.model, purpose: "hydemods_recommend", onUsage: journalJudgmentUsage(ctx.sessionManager) });
+			const picks = await recommend(judge, params.task, candidates, { limit: Math.max(1, params.limit ?? 5), signal });
+			return { content: [{ type: "text" as const, text: formatRecommendations(picks) }], details: undefined };
+		},
+	});
+	pi.registerTool({
 		name: "agent_model",
 		label: "Agent Model",
 		description: "Override which model a task subagent type runs on, for this session only. `list` shows overrides; `set` needs `agent` (e.g. reviewer, task, scout) and `model`; `clear` removes the session override for `agent`.",
@@ -2716,7 +2753,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	});
 	// Settings-gated tools: off removes them from the active set; on restores only what this sync removed,
 	// so tools the user deactivated by other means stay off.
-	const GATED_TOOLS: Record<string, string> = { "monitor-tool": "monitor", "call-model-tool": "call_model", "agent-model-tool": "agent_model", ror: "ror" };
+	const GATED_TOOLS: Record<string, string> = { "monitor-tool": "monitor", "call-model-tool": "call_model", "agent-model-tool": "agent_model", "recommend-tools": "recommend_tools", ror: "ror" };
 	const removedByUs = new Set<string>();
 	const syncGatedTools = () => {
 		const active = pi.getActiveTools();

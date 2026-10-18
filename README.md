@@ -34,7 +34,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 - **Session title.** The first prompt names the session once. `/rename` still works.
 - **Last prompt drawer.** A preview of your latest prompt shows above the editor.
 - **Runaway edit guard.** An `edit` call stops when its input repeats `*** End Patch` three times or passes 96 KB. The agent then retries with small hashline ops.
-- **Tool toggles.** `/hydemods` also switches the `monitor`, `call_model`, `agent_model`, and `ror` tools. Off removes the tool from the active set. Off for `ror` also turns `/ror` into a no-op. The runaway edit guard has its own toggle too. All default to on.
+- **Tool toggles.** `/hydemods` also switches the `monitor`, `call_model`, `agent_model`, `recommend_tools`, and `ror` tools. Off removes the tool from the active set. Off for `ror` also turns `/ror` into a no-op. The runaway edit guard has its own toggle too. All default to on.
 - **Message backgrounds.** `/hydemods` has a Colors section with a preset row each for prompts, responses, and tool calls (`off`, `slate`, `blue`, `green`, `amber`, `purple`, `rose`). `off` keeps your theme color, and it is the default.
   - Presets pick a dark or light tint to match your theme. To use any color, set `hydemods.userBgHex`, `hydemods.assistantBgHex`, or `hydemods.toolBgHex` to `#rrggbb` in `settings.yaml`. A hex wins over the preset.
   - The tool color covers pending and successful calls. Failed calls stay red.
@@ -73,6 +73,7 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
   - When the session exposes its job manager, each monitor is also one native job. `proc://` lists it for its whole life, `proc://<id>/kill` cancels it, and `list` shows its `proc://` id. Without a job manager the monitor runs the same way, without a `proc://` entry.
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
+- **`recommend_tools`.** Asks the `judge` role which tools and skills fit a task. Each candidate becomes one yes/no question, sent in batches of 40. Returns up to `limit` matches (default 5) scoring at least 50%, best first. Judge cost is billed to the session.
 - **`ror` (ready for review).** Finds your ready PRs, groups them in tiers, and sends them in a Slack DM.
 
 ## ROR

@@ -1,0 +1,69 @@
+import type { Judge, NoulQuestion } from "@oh-my-pi/pi-ai";
+
+export interface Candidate {
+	kind: "tool" | "skill";
+	name: string;
+	description: string;
+	/** Registered but not in the active tool set; may need enabling or discovery before use. */
+	inactive?: boolean;
+}
+
+export interface Recommendation extends Candidate {
+	/** Judge's probability that this candidate materially helps with the task. */
+	score: number;
+}
+
+export interface RecommendOptions {
+	limit?: number;
+	threshold?: number;
+	signal?: AbortSignal;
+}
+
+/** Questions per judge request; batches run concurrently. */
+const CHUNK = 40;
+const DESCRIPTION_CHARS = 280;
+
+function summarize(description: string): string {
+	const flat = description.replace(/\s+/g, " ").trim();
+	return flat.length > DESCRIPTION_CHARS ? `${flat.slice(0, DESCRIPTION_CHARS - 1)}…` : flat;
+}
+
+export function candidateQuestion(candidate: Candidate): NoulQuestion {
+	return {
+		type: "noul",
+		instructions: `${candidate.kind === "tool" ? "Tool" : "Skill"} \`${candidate.name}\`: ${summarize(candidate.description)}\nWould using this ${candidate.kind} materially help an agent carry out the task?`,
+		criteria: {
+			true: "It directly serves a step the task needs, better than generic file/shell tools would.",
+			false: "It is unrelated, only tangential, or generic tooling any task would use.",
+		},
+	};
+}
+
+/** Ask the judge one yes/no question per candidate and return the strongest matches, best first. */
+export async function recommend(judge: Judge, task: string, candidates: readonly Candidate[], options: RecommendOptions = {}): Promise<Recommendation[]> {
+	const { limit = 5, threshold = 0.5, signal } = options;
+	const chunks: Candidate[][] = [];
+	for (let start = 0; start < candidates.length; start += CHUNK) chunks.push(candidates.slice(start, start + CHUNK));
+	const scored = await Promise.all(
+		chunks.map(async chunk => {
+			const questions = Object.fromEntries(chunk.map((candidate, index) => [`c${index}`, candidateQuestion(candidate)]));
+			const { answers } = await judge.judge({ state: { task }, questions }, { signal });
+			return chunk.map((candidate, index) => {
+				const answer = answers[`c${index}`];
+				return { ...candidate, score: answer?.type === "noul" ? answer.noul : 0 };
+			});
+		}),
+	);
+	return scored
+		.flat()
+		.filter(entry => entry.score >= threshold)
+		.sort((a, b) => b.score - a.score)
+		.slice(0, limit);
+}
+
+export function formatRecommendations(recommendations: readonly Recommendation[]): string {
+	if (recommendations.length === 0) return "No tool or skill stood out for this task; generic tools should do.";
+	return recommendations
+		.map(entry => `- ${entry.kind === "skill" ? `skill://${entry.name}` : entry.name} (${entry.kind}${entry.inactive ? ", inactive" : ""}, ${Math.round(entry.score * 100)}%): ${summarize(entry.description)}`)
+		.join("\n");
+}
