@@ -265,6 +265,24 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 	}
 });
 
+test("a title longer than the others still lines up every row's file", () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, view } = setup(mode);
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		const long = "Understanding how rowsFor function works with component and state";
+		tool("read", { path: "lib/tool-rows-host.ts:698-712", i: long }, "a");
+		tool("read", { path: "a.txt", i: "Learning a.txt" }, "b");
+		tool("edit", { input: "[a.txt#ABCD]\nPUT 1.=1:\n+x", i: "Making a change" }, "c");
+		const rows = view().slice(2);
+		const column = rows[0]!.indexOf("tool-rows-host.ts");
+		expect(rows[0]).toBe(`✔ Read  ${long}  tool-rows-host.ts:698-712`);
+		expect(rows.slice(1).map(row => row.lastIndexOf("a.txt"))).toEqual([column, column]);
+	} finally {
+		uninstall();
+	}
+});
+
 test("a call with no subject column keeps the model's filename lead", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode, async () => "approval.ts: function resolveApproval");
@@ -316,6 +334,26 @@ test("a closed group without the model's items lists the agent's lines for its l
 		transcript.addChild(new Text("reply", 0, 0));
 		await settle();
 		expect(view().slice(0, 3)).toEqual(["✔ 4 calls", "  • Making a export x", "  • Making b import x"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a group bullet wider than the pane wraps under its own text instead of being cut", async () => {
+	const mode = { value: "group" as ToolRowsMode };
+	const { uninstall, transcript, tool } = setup(mode, async () => "Moved the file column last so every row lines up\nKept it");
+	try {
+		tool("read", { path: "src/a.ts", i: "Understanding the a module" }, "a");
+		transcript.addChild(new Text("reply", 0, 0));
+		transcript.renderViewport(30, 30, frame);
+		await settle();
+		expect(plain(transcript.renderViewport(30, 30, frame)).slice(0, 5)).toEqual([
+			"✔ 1 call",
+			"  • Moved the file column last",
+			"    so every row lines up",
+			"  • Kept it",
+			"",
+		]);
 	} finally {
 		uninstall();
 	}

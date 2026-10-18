@@ -1,4 +1,4 @@
-import { type Component, Container, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type Component, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import {
@@ -103,9 +103,6 @@ interface Plan {
 
 /** How long a head waits for its model lines before it lets the transcript retire it. */
 const HoldMs = 4_000;
-/** Column caps: a longer label or title pushes only its own row's later columns right. */
-const MaxLabelWidth = 12;
-const MaxTitleWidth = 56;
 /** Tools whose call changes files: a closed group lists these calls' lines until the model's items land. */
 const ChangeTools: Record<string, true> = { edit: true, write: true, ast_edit: true, notebook_edit: true };
 /** Group mode: how many decisions, pivots, or changes a closed burst lists. */
@@ -702,10 +699,10 @@ export class ToolRows {
 		const calls = this.runCalls(run.tools);
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
-		if (this.host.mode() === "group") return this.groupRows(state, calls, run.closed, theme).map(row => truncateToWidth(row, width));
+		if (this.host.mode() === "group") return this.groupRows(state, calls, run.closed, theme, width).map(row => truncateToWidth(row, width));
 		const titles = calls.map(call => this.title(call));
-		const labelWidth = Math.min(MaxLabelWidth, Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length)));
-		const titleWidth = Math.min(MaxTitleWidth, Math.max(0, ...titles.map(title => visibleWidth(title.text))));
+		const labelWidth = Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length));
+		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
 		const fit = { width, subjectWidth: Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))) };
 		return calls.map((call, index) => truncateToWidth(this.callRow(call, titles[index]!, subjects[index], labelWidth, titleWidth, theme, fit), width));
@@ -785,9 +782,10 @@ export class ToolRows {
 
 	/**
 	 * A closed burst: a status row (glyph, call count, failures), then its biggest decisions, pivots, or
-	 * changes as up to three bullets in place of the calls. A live burst: one row naming the latest call.
+	 * changes as up to three bullets in place of the calls; a long bullet wraps under its own text.
+	 * A live burst: one row naming the latest call.
 	 */
-	private groupRows(state: BlockState, calls: CallState[], closed: boolean, theme: Theme): string[] {
+	private groupRows(state: BlockState, calls: CallState[], closed: boolean, theme: Theme, width = Infinity): string[] {
 		const failed = calls.filter(call => call.result?.isError).length;
 		const live = calls.find(call => this.running(call));
 		if (closed && !live) this.ensureSummary(state, calls.map(call => this.stepLine(call)));
@@ -806,7 +804,13 @@ export class ToolRows {
 				items = (changes.length ? changes.slice(-MaxRunItems) : settled.slice(-1)).map(({ title }) => title.text);
 			}
 			const bullet = theme.fg("dim", "•");
-			return [`${glyph} ${count}${failures}`, ...items.map(item => `  ${bullet} ${this.body({ text: item, settled: true }, theme)}`)];
+			const indent = "    ";
+			const wrapped = items.flatMap(item => {
+				const body = this.body({ text: item, settled: true }, theme);
+				const lines = Number.isFinite(width) ? wrapTextWithAnsi(body, Math.max(1, width - indent.length)) : [body];
+				return lines.map((line, index) => `${index === 0 ? `  ${bullet} ` : indent}${line}`);
+			});
+			return [`${glyph} ${count}${failures}`, ...wrapped];
 		}
 		const latest = live ?? calls[calls.length - 1]!;
 		const subject = callSubject(latest.name ?? "", latest.args);
