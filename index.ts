@@ -29,6 +29,7 @@ import { referenceLocations } from "./lib/reference-output";
 // Keep helper modules below lib/: configured extension roots scan direct .ts files.
 import { setHostAutoTitle, shouldGenerateTitle } from "./lib/session-title";
 import { orcaPaneTitle } from "./lib/orca-pane-title";
+import { showInOrcaBrowser } from "./lib/orca-browser";
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { isSettingsInitialized, settings as hostSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
@@ -2948,8 +2949,16 @@ export default function hydemods(pi: ExtensionAPI): void {
 		}
 		return gallery;
 	};
-	const showInBrowser = (url: string) => {
-		execFile(process.platform === "darwin" ? "open" : "xdg-open", [url], () => {});
+	// Inside Orca the page opens as a tab of Orca's own browser, in the background because the Orca CLI
+	// can take seconds; when Orca does not answer, and outside Orca, it opens in the system browser.
+	const systemBrowser = (url: string) => execFile(process.platform === "darwin" ? "open" : "xdg-open", [url], () => {});
+	const showInBrowser = (url: string): string => {
+		if (!Bun.env.ORCA_WORKTREE_ID) {
+			systemBrowser(url);
+			return "in the browser";
+		}
+		void showInOrcaBrowser(url).then(shown => shown || systemBrowser(url));
+		return "in Orca's browser";
 	};
 	pi.on("session_shutdown", () => { gallery?.server.stop(); gallery = undefined; });
 	pi.registerTool({
@@ -2972,8 +2981,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
 			const op = params.op ?? "push";
 			if (op === "open") {
-				showInBrowser(server.url);
-				return reply(`Opened ${server.url}`);
+				const where = showInBrowser(server.url);
+				return reply(`Opened ${server.url} ${where}`);
 			}
 			if (op === "list") {
 				const { items } = store.read();
@@ -2998,9 +3007,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 				}
 			}
 			if (!added.length) throw new Error(failed.join("\n"));
-			const opened = (await server.viewers()) === 0;
-			if (opened) showInBrowser(server.url);
-			const lines = [`Added ${added.length} picture${added.length === 1 ? "" : "s"} (${added.join(", ")}) to ${server.url}${opened ? ", opened in the browser" : ""}.`, ...failed.map(message => `Skipped: ${message}`)];
+			const opened = (await server.viewers()) === 0 ? showInBrowser(server.url) : undefined;
+			const lines = [`Added ${added.length} picture${added.length === 1 ? "" : "s"} (${added.join(", ")}) to ${server.url}${opened ? `, opened ${opened}` : ""}.`, ...failed.map(message => `Skipped: ${message}`)];
 			return reply(lines.join("\n"));
 		},
 	});
