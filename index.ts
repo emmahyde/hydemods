@@ -101,7 +101,7 @@ const TWEAK_DEFS: TweakDef[] = [
 		title: "Integrated tool cards",
 		description: "Draws structured tool results inside OMP's own tool card.",
 		category: "Interface",
-		render: () => "Ctrl+O expands, Cmd+Opt+O toggles hydemods rendering for the session. Collapsed height: /hydemods collapsed-lines N or +/- here.",
+		render: () => "Ctrl+O expands, Ctrl+Shift+T toggles hydemods rendering for the session. Collapsed height: /hydemods collapsed-lines N or +/- here.",
 	},
 	{
 		name: "tool-results-toon",
@@ -2139,8 +2139,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		repaintToolCards(ctx);
 		if (ctx.hasUI) ctx.ui.notify(`hydemods cards ${display.cardsOn ? "on" : "off"}`, "info");
 	};
-	pi.registerShortcut("super+alt+o", { description: "Toggle hydemods tool cards", handler: toggleCards });
-	pi.registerShortcut("ctrl+alt+o", { description: "Toggle hydemods tool cards (terminals without Cmd reporting)", handler: toggleCards });
+	pi.registerShortcut("ctrl+shift+t", { description: "Toggle hydemods tool cards", handler: toggleCards });
 	const cycleToolRows = (ctx: ExtensionContext) => {
 		if (!isSettingsInitialized()) return;
 		const current = readSetting(toolRowsSetting);
