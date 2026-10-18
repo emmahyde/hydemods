@@ -102,9 +102,9 @@ interface Plan {
 
 /** How long a head waits for its model lines before it lets the transcript retire it. */
 const HoldMs = 4_000;
-/** Column caps: a longer label or file name pushes only its own row's title right. */
+/** Column caps: a longer label or title pushes only its own row's later columns right. */
 const MaxLabelWidth = 12;
-const MaxSubjectWidth = 28;
+const MaxTitleWidth = 56;
 /**
  * Each tool's label colour, from theme tokens so it follows the theme. Themes have few distinct
  * hues, so the frequent tools (read, grep, glob, find, edit) get different ones and rarer tools share.
@@ -159,10 +159,12 @@ function hasVisibleText(message: unknown): boolean {
 	return content.some(block => block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" && (block as { text: string }).text.trim() !== "");
 }
 
+function blankRow(row: string): boolean {
+	return row.replace(/\x1b\[[0-9;]*m/g, "").trim() === "";
+}
+
 function trimmedRows(rows: readonly string[]): number {
-	let count = 0;
-	for (const row of rows) if (row.replace(/\x1b\[[0-9;]*m/g, "").trim() !== "") count++;
-	return count;
+	return rows.filter(row => !blankRow(row)).length;
 }
 
 export class ToolRows {
@@ -361,7 +363,6 @@ export class ToolRows {
 	private nativeRun(component: Component, own: unknown, width: unknown): unknown {
 		const container = this.containerFor(component);
 		if (!container || !Array.isArray(own)) return own;
-		const blank = (row: string) => !row.replace(/\x1b\[[0-9;]*m/g, "").trim();
 		const rows: string[] = [...(own as string[])];
 		for (const child of container.children) {
 			if (stateOf(child)?.owner !== component) continue;
@@ -370,12 +371,12 @@ export class ToolRows {
 			const more: unknown = Reflect.apply(render, child, [width]);
 			if (!Array.isArray(more)) continue;
 			const card = [...(more as string[])];
-			while (card.length && blank(card[0]!)) card.shift();
-			while (card.length && blank(card.at(-1)!)) card.pop();
+			while (card.length && blankRow(card[0]!)) card.shift();
+			while (card.length && blankRow(card.at(-1)!)) card.pop();
 			if (!card.length) continue;
 			// One blank row between cards, as the transcript puts between blocks; the run keeps its own trailing rows.
 			const tail: string[] = [];
-			while (rows.length && blank(rows.at(-1)!)) tail.push(rows.pop()!);
+			while (rows.length && blankRow(rows.at(-1)!)) tail.push(rows.pop()!);
 			rows.push("", ...card, ...tail);
 		}
 		return rows;
@@ -686,10 +687,12 @@ export class ToolRows {
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
 		if (this.host.mode() === "group") return [truncateToWidth(this.groupRow(state, calls, run.closed, theme), width)];
-		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
+		const titles = calls.map(call => this.title(call));
 		const labelWidth = Math.min(MaxLabelWidth, Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length)));
-		const subjectWidth = Math.min(MaxSubjectWidth, Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))));
-		return calls.map((call, index) => truncateToWidth(this.callRow(call, subjects[index], labelWidth, subjectWidth, theme), width));
+		const titleWidth = Math.min(MaxTitleWidth, Math.max(0, ...titles.map(title => visibleWidth(title.text))));
+		return calls.map((call, index) =>
+			truncateToWidth(this.callRow(call, titles[index]!, callSubject(call.name ?? "", call.args), labelWidth, titleWidth, theme), width),
+		);
 	}
 
 	private runCalls(tools: readonly Component[]): CallState[] {
@@ -751,13 +754,11 @@ export class ToolRows {
 		return out + theme.fg("muted", title.text.slice(last));
 	}
 
-	private callRow(call: CallState, subject: string | undefined, labelWidth: number, subjectWidth: number, theme: Theme): string {
-		const title = this.title(call);
+	/** Glyph and label, then the title padded to the run's widest, then the subject last, so a row without one leaves no gap. */
+	private callRow(call: CallState, title: { text: string; settled: boolean }, subject: string | undefined, labelWidth: number, titleWidth: number, theme: Theme): string {
 		const parts = [`${this.glyph(call, theme)} ${this.label(call, theme, labelWidth)}`];
-		// The column is `` `subject` ``: the widest subject plus its two backticks. A row without one pads across it.
-		if (subject) parts.push(this.subject(subject, theme) + " ".repeat(Math.max(0, subjectWidth - visibleWidth(subject))));
-		else if (subjectWidth > 0) parts.push(" ".repeat(subjectWidth + 2));
-		if (title.text) parts.push(this.body(title, theme));
+		if (title.text || titleWidth > 0) parts.push(this.body(title, theme) + " ".repeat(Math.max(0, titleWidth - visibleWidth(title.text))));
+		if (subject) parts.push(this.subject(subject, theme));
 		return parts.join("  ").trimEnd();
 	}
 

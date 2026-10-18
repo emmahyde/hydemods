@@ -183,7 +183,7 @@ test("blocks moved into another transcript without addChild still draw as rows (
 	}
 });
 
-test("lines mode aligns labels and file subjects into columns and drops the model's filename lead", async () => {
+test("lines mode aligns labels and titles into columns, puts the file last, and drops the model's filename lead", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool, view } = setup(mode);
 	try {
@@ -193,15 +193,15 @@ test("lines mode aligns labels and file subjects into columns and drops the mode
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
 		// The intents show as written; only the call without one waits for the model.
 		expect(view().slice(2)).toEqual([
-			"✔ Read  `tool-rows-host.ts:10-40`",
-			`✔ Grep${" ".repeat(29)}Finding TODOs`,
-			`✔ Read  \`a.ts\`${" ".repeat(21)}Reading a`,
+			`✔ Read  ${" ".repeat(13)}  \`tool-rows-host.ts:10-40\``,
+			"✔ Grep  Finding TODOs",
+			"✔ Read  Reading a      `a.ts`",
 		]);
 		await settle();
 		expect(view().slice(2)).toEqual([
-			"✔ Read  `tool-rows-host.ts:10-40`  render draws rows; plan groups runs",
-			`✔ Grep${" ".repeat(29)}Finding TODOs`,
-			`✔ Read  \`a.ts\`${" ".repeat(21)}Reading a`,
+			"✔ Read  render draws rows; plan groups runs  `tool-rows-host.ts:10-40`",
+			"✔ Grep  Finding TODOs",
+			`✔ Read  Reading a${" ".repeat(26)}  \`a.ts\``,
 		]);
 	} finally {
 		uninstall();
