@@ -228,16 +228,38 @@ test("lines mode aligns labels and titles into columns, puts the file last, and 
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
 		// The intents show as written; only the call without one waits for the model.
 		expect(view().slice(2)).toEqual([
-			`✔ Read  ${" ".repeat(13)}  \`tool-rows-host.ts:10-40\``,
+			`✔ Read  ${" ".repeat(13)}  tool-rows-host.ts:10-40`,
 			"✔ Grep  Finding TODOs",
-			"✔ Read  Reading a      `a.ts`",
+			"✔ Read  Reading a      a.ts",
 		]);
 		await settle();
 		expect(view().slice(2)).toEqual([
-			"✔ Read  render draws rows; plan groups runs  `tool-rows-host.ts:10-40`",
+			"✔ Read  render draws rows; plan groups runs  tool-rows-host.ts:10-40",
 			"✔ Grep  Finding TODOs",
-			`✔ Read  Reading a${" ".repeat(26)}  \`a.ts\``,
+			`✔ Read  Reading a${" ".repeat(26)}  a.ts`,
 		]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a narrow pane cuts the status line, so the run's files stay on screen and aligned", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool } = setup(mode);
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		tool("read", { path: "lib/tool-rows-host.ts:10-40" }, "a");
+		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
+		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
+		transcript.renderViewport(50, 30, frame);
+		await settle();
+		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
+		expect(rows.map(row => Bun.stringWidth(row) <= 50)).toEqual([true, true, true]);
+		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
+		expect(rows[0]).toBe("✔ Read  render draws row…  tool-rows-host.ts:10-40");
+		expect(rows[1]).toBe("✔ Grep  Finding TODOs");
+		expect(rows[2]).toEndWith("  a.ts");
+		expect(rows[2]!.indexOf("a.ts")).toBe(rows[0]!.indexOf("tool-rows-host.ts"));
 	} finally {
 		uninstall();
 	}

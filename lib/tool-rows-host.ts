@@ -706,9 +706,9 @@ export class ToolRows {
 		const titles = calls.map(call => this.title(call));
 		const labelWidth = Math.min(MaxLabelWidth, Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length)));
 		const titleWidth = Math.min(MaxTitleWidth, Math.max(0, ...titles.map(title => visibleWidth(title.text))));
-		return calls.map((call, index) =>
-			truncateToWidth(this.callRow(call, titles[index]!, callSubject(call.name ?? "", call.args), labelWidth, titleWidth, theme), width),
-		);
+		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
+		const fit = { width, subjectWidth: Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))) };
+		return calls.map((call, index) => truncateToWidth(this.callRow(call, titles[index]!, subjects[index], labelWidth, titleWidth, theme, fit), width));
 	}
 
 	private runCalls(tools: readonly Component[]): CallState[] {
@@ -751,11 +751,10 @@ export class ToolRows {
 		return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
 	}
 
-	/** `` `file.ts` `` in the theme's path colour inside dim backticks, its `:40-80` selector dimmed. */
+	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed. */
 	private subject(subject: string, theme: Theme): string {
 		const selector = /:[\d+,-]+$/.exec(subject)?.[0] ?? "";
-		const tick = theme.fg("dim", "`");
-		return `${tick}${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}${tick}`;
+		return `${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
 	}
 
 	/** A settled title in muted text with its code words in body text; a fallback (intent) title is dim italic. */
@@ -770,10 +769,16 @@ export class ToolRows {
 		return out + theme.fg("muted", title.text.slice(last));
 	}
 
-	/** Glyph and label, then the title padded to the run's widest, then the subject last, so a row without one leaves no gap. */
-	private callRow(call: CallState, title: { text: string; settled: boolean }, subject: string | undefined, labelWidth: number, titleWidth: number, theme: Theme): string {
+	/**
+	 * Glyph and label, then the title padded to the run's widest, then the subject last, so a row without one
+	 * leaves no gap. When a row would pass `fit.width`, the title is cut so the run's files stay on screen and aligned.
+	 */
+	private callRow(call: CallState, title: { text: string; settled: boolean }, subject: string | undefined, labelWidth: number, titleWidth: number, theme: Theme, fit?: { width: number; subjectWidth: number }): string {
 		const parts = [`${this.glyph(call, theme)} ${this.label(call, theme, labelWidth)}`];
-		if (title.text || titleWidth > 0) parts.push(this.body(title, theme) + " ".repeat(Math.max(0, titleWidth - visibleWidth(title.text))));
+		const room = subject && fit ? fit.width - visibleWidth(parts[0]!) - fit.subjectWidth - 4 : Infinity;
+		const shown = room < visibleWidth(title.text) ? { ...title, text: truncateToWidth(title.text, Math.max(0, room)) } : title;
+		const pad = Math.min(titleWidth, Math.max(0, room));
+		if (shown.text || pad > 0) parts.push(this.body(shown, theme) + " ".repeat(Math.max(0, pad - visibleWidth(shown.text))));
 		if (subject) parts.push(this.subject(subject, theme));
 		return parts.join("  ").trimEnd();
 	}
