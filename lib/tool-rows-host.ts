@@ -1,3 +1,4 @@
+import type { Judge } from "@oh-my-pi/pi-ai";
 import { type Component, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
@@ -14,6 +15,7 @@ import {
 	type CallText,
 	CallSystemPrompt,
 	type Complete,
+	IntentJudge,
 	LineCache,
 	RunSystemPrompt,
 	type RunItem,
@@ -57,6 +59,8 @@ export interface ToolRowsHost {
 	readEntries(group: ReadToolGroupComponent): ReadEntries | undefined;
 	/** Name and arguments for a call id, from the live stream or the session. */
 	lookupCall(id: string): { name: string; args: unknown } | undefined;
+	/** The judge that decides whether an intent says enough, or undefined when none is available. */
+	judge(): Judge | undefined;
 }
 
 interface CallState {
@@ -183,6 +187,7 @@ function trimmedRows(rows: readonly string[]): number {
 export class ToolRows {
 	private readonly host: ToolRowsHost;
 	private readonly lines: LineCache;
+	private readonly intents: IntentJudge;
 	private readonly transcripts = new Set<WeakRef<Container>>();
 	private readonly plans = new WeakMap<Container, Plan>();
 	private readonly containerOf = new WeakMap<Component, Container>();
@@ -197,6 +202,7 @@ export class ToolRows {
 		this.host = host;
 		// The first request also loads the model, which takes tens of seconds; heads stop waiting long before.
 		this.lines = new LineCache({ complete: host.complete, onReady: () => this.changed(true), timeoutMs: 60_000 });
+		this.intents = new IntentJudge({ judge: () => host.judge(), onReady: () => this.changed(true) });
 	}
 
 	/* ------------------------------ lifecycle ------------------------------ */
@@ -221,6 +227,7 @@ export class ToolRows {
 			}
 			this.transcripts.clear();
 			this.lines.clear();
+			this.intents.clear();
 			clearTimeout(this.repaintTimer);
 			if (holder[INSTALLED] === uninstall) holder[INSTALLED] = undefined;
 		};
@@ -244,6 +251,7 @@ export class ToolRows {
 
 	reset(): void {
 		this.lines.clear();
+		this.intents.clear();
 		this.bound.clear();
 		this.noted.length = 0;
 		this.changed(false);
@@ -642,21 +650,26 @@ export class ToolRows {
 	}
 
 	/**
-	 * The call's title without its file: the model line once it lands (`settled`), else the agent's
-	 * intent as written (also settled, so nothing waits on the model), else the call's main argument.
+	 * The call's title without its file. A call with an intent shows it at once; the judge then says
+	 * whether it is enough, and when it is not the model line replaces it once that lands. A call
+	 * without an intent shows the model line, else its main argument. Only that wait is unsettled.
 	 * A call with a subject never falls back to its raw path or edit script; the subject column shows it.
+	 * Group mode shows an intent as written: its rows are passing steps, not worth a judge request.
 	 */
 	private title(call: CallState): { text: string; settled: boolean } {
 		const intent = this.intent(call);
 		const text = this.callText(call);
 		const subject = callSubject(call.name ?? "", call.args);
-		if (text && (call.argsComplete || call.result)) {
+		if (text && (call.argsComplete || call.result) && !(intent && this.host.mode() === "group")) {
 			const key = `call:${callPrompt(text)}`;
-			this.lines.request(key, CallSystemPrompt, callPrompt(text));
-			const line = this.lines.get(key);
-			// With a subject column the model's filename lead is redundant, and sometimes wrong; without one it is the only file named.
-			const labels = [toolLabel(call.name ?? ""), callLabel(call.name ?? "", call.args)];
-			if (line) return { text: withoutLabel(subject ? line.replace(/^\S+\.\w+:\s*/, "") : line, labels), settled: true };
+			if (intent) this.intents.request(key, text, intent);
+			if (!intent || this.intents.verdict(key) === false) {
+				this.lines.request(key, CallSystemPrompt, callPrompt(text));
+				const line = this.lines.get(key);
+				// With a subject column the model's filename lead is redundant, and sometimes wrong; without one it is the only file named.
+				const labels = [toolLabel(call.name ?? ""), callLabel(call.name ?? "", call.args)];
+				if (line) return { text: withoutLabel(subject ? line.replace(/^\S+\.\w+:\s*/, "") : line, labels), settled: true };
+			}
 		}
 		if (intent) return { text: intent, settled: true };
 		return { text: subject ? "" : fallbackLine(call.args), settled: false };

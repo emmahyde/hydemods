@@ -1,3 +1,4 @@
+import type { Judge, NoulQuestion } from "@oh-my-pi/pi-ai";
 import { stripControls } from "./eval-summary";
 
 /**
@@ -251,6 +252,7 @@ export const CallSystemPrompt = [
  "Start with an -ing verb that names the agent's purpose, such as Understanding, Tracing, Checking, Looking for, Making, Documenting, Testing.",
  "Never use the tool's name or any form of it (Read, Reading, Grep, Grepping, Search, Searching, Edit, Editing, Bash, Running); the row already shows the tool.",
  "Write ASD-STE100 simple English: common words, one idea.",
+ "Add a light touch of dry wit when it fits: a wry verb or a deadpan aside, never a pun or a joke that hides what the call does. Most lines stay plain.",
  "Never name the file the call reads, writes or edits; the row already shows it. Never give line numbers.",
  "Code, config, rule or prompt edit or write: say what the agent is making the program do, never that text was reworded, edited or updated.",
  "README or doc edit: Documenting what the doc now says.",
@@ -334,6 +336,96 @@ export function withoutCopiedLines(lines: string | undefined, system: string): s
  const prompt = system.toLowerCase();
  const kept = lines.split("\n").filter(line => !prompt.includes(line.replace(/…$/, "").toLowerCase()));
  return kept.length ? kept.join("\n") : undefined;
+}
+
+/* ------------------------------ intent judge ------------------------------ */
+
+/** Calls one judge request carries; more wait for the next flush. */
+const MaxJudgedCalls = 12;
+/** Requests arriving this close together share one judge call. */
+const JudgeBatchMs = 150;
+/** At or above this probability the intent says enough and no model line replaces it. */
+const SufficientIntent = 0.5;
+
+export function intentQuestion(id: string): NoulQuestion {
+ return {
+  type: "noul",
+  instructions: `Call \`${id}\` in calls: the row shows the tool, its file, and the agent's \`intent\`. Does the intent alone tell a reader what this call does and why?`,
+  criteria: {
+   true: "The intent names the specific thing the call works on and its purpose, and matches what the args and output show; a fuller description would add nothing a reader needs.",
+   false: "The intent is vague, generic, a placeholder, or misses what the args or output show, so a description written from the call would tell the reader more.",
+  },
+ };
+}
+
+interface JudgedCall {
+ key: string;
+ call: { tool: string; args: unknown; output?: string; intent: string };
+}
+
+/**
+ * Asks the judge, once per call, whether the agent's intent is enough for its row. Calls asked
+ * close together share one request. A failed request counts as "not enough", so the model line
+ * replaces the intent as it would with no judge.
+ */
+export class IntentJudge {
+ private readonly verdicts = new Map<string, boolean>();
+ private readonly pending: JudgedCall[] = [];
+ private readonly asked = new Set<string>();
+ private timer?: Timer;
+ private generation = 0;
+
+ constructor(private readonly options: { judge: () => Judge | undefined; onReady: () => void; batchMs?: number }) { }
+
+ /** True when the intent is enough, false when a model line should replace it, undefined while asking. */
+ verdict(key: string): boolean | undefined {
+  return this.verdicts.get(key);
+ }
+
+ request(key: string, text: CallText, intent: string): void {
+  if (this.verdicts.has(key) || this.asked.has(key)) return;
+  this.asked.add(key);
+  const output = text.output === undefined ? undefined : text.output.length > MaxOutputString ? `${text.output.slice(0, MaxOutputString)}…` : text.output;
+  this.pending.push({ key, call: { tool: text.name, args: trimmedArgs(text.args), ...(output === undefined ? {} : { output }), intent } });
+  this.timer ??= setTimeout(() => this.flush(), this.options.batchMs ?? JudgeBatchMs);
+ }
+
+ clear(): void {
+  this.generation++;
+  this.verdicts.clear();
+  this.asked.clear();
+  this.pending.length = 0;
+  clearTimeout(this.timer);
+  this.timer = undefined;
+ }
+
+ private flush(): void {
+  this.timer = undefined;
+  const batch = this.pending.splice(0, MaxJudgedCalls);
+  if (this.pending.length) this.timer = setTimeout(() => this.flush(), 0);
+  if (batch.length) void this.ask(batch, this.generation);
+ }
+
+ private async ask(batch: readonly JudgedCall[], generation: number): Promise<void> {
+  let answers: Record<string, unknown> = {};
+  try {
+   const judge = this.options.judge();
+   if (judge) {
+    const calls = Object.fromEntries(batch.map((entry, index) => [`c${index}`, entry.call]));
+    const questions = Object.fromEntries(batch.map((_, index) => [`c${index}`, intentQuestion(`c${index}`)]));
+    answers = (await judge.judge({ state: JSON.parse(JSON.stringify({ calls })), questions })).answers;
+   }
+  } catch {
+   // No judge, a failed request, or a parse error: every call in the batch gets its model line.
+  }
+  if (generation !== this.generation) return;
+  batch.forEach((entry, index) => {
+   const answer = answers[`c${index}`] as { type?: string; noul?: number } | undefined;
+   this.verdicts.set(entry.key, answer?.type === "noul" && (answer.noul ?? 0) >= SufficientIntent);
+   this.asked.delete(entry.key);
+  });
+  try { this.options.onReady(); } catch { /* A failed repaint must not reject background work. */ }
+ }
 }
 
 /* ------------------------------- line cache ------------------------------- */

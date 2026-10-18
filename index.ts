@@ -9,7 +9,7 @@ import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { summarizeCode } from "@oh-my-pi/pi-natives";
-import { completeSimple, type Usage } from "@oh-my-pi/pi-ai";
+import { completeSimple, type Judge, type Usage } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme as uiTheme } from "@oh-my-pi/pi-tui/theme";
 import { fileHyperlink, previewWindowRows } from "@oh-my-pi/pi-tui/render";
@@ -2106,6 +2106,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
 		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
 	};
+	let rowsJudge: { ctx: ExtensionContext; judge: Judge } | undefined;
 	const toolRows = new ToolRows({
 		mode: () => readSetting(toolRowsSetting),
 		expanded: () => (lastCtx?.hasUI ? lastCtx.ui.getToolsExpanded() : false),
@@ -2114,6 +2115,12 @@ export default function hydemods(pi: ExtensionAPI): void {
 		repaint: () => { if (lastCtx) repaintToolCards(lastCtx); },
 		readEntries: group => readGroupStates.get(group)?.entries,
 		lookupCall,
+		// One judge request per burst of calls with intents, billed to the session like recommend_tools.
+		judge: () => {
+			if (!lastCtx) return undefined;
+			if (rowsJudge?.ctx !== lastCtx) rowsJudge = { ctx: lastCtx, judge: resolveJudge({ settings: hostSettings, registry: lastCtx.modelRegistry, sessionModel: lastCtx.model, purpose: "hydemods_tool_rows", onUsage: journalJudgmentUsage(lastCtx.sessionManager) }) };
+			return rowsJudge.judge;
+		},
 	});
 	let uninstallToolRows: (() => void) | undefined;
 	watchSetting(toolRowsSetting, () => toolRows.refresh());

@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "bun:test";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
@@ -120,8 +120,17 @@ const frame = { tick: 0, now: 0 };
 const ui = { requestRender() { }, requestComponentRender() { }, resetDisplay() { } };
 // The line cache starts each request on a microtask and awaits the model on another.
 const settle = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+// The intent judge batches calls for 150 ms before it asks; fake timers step past that. A "not enough"
+// verdict asks for the model line on the next draw, so draw once, then let the line land.
+const judged = async (draw: () => unknown) => {
+	vi.advanceTimersByTime(200);
+	await settle();
+	draw();
+	await settle();
+};
 
-function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>) {
+function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0) {
+	const judgeStates: unknown[] = [];
 	const calls = new Map<string, { name: string; args: unknown }>();
 	const readGroups = new Map<object, Map<string, { args: unknown; result?: { content: unknown[] } }>>();
 	const rows = new ToolRows({
@@ -136,6 +145,15 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		repaint: () => { },
 		readEntries: group => readGroups.get(group) as never,
 		lookupCall: id => calls.get(id),
+		judge: () => ({
+			label: "test/judge",
+			judge: async request => {
+				judgeStates.push(request.state);
+				const state = request.state as { calls: Record<string, { intent: string }> };
+				const answers = Object.fromEntries(Object.entries(state.calls).map(([id, call]) => [id, { type: "noul", noul: intentSays(call.intent) }]));
+				return { api: "test", provider: "test", model: "test", answers, usage: undefined } as never;
+			},
+		}),
 	});
 	const uninstall = rows.install();
 	rows.setIdle(false);
@@ -148,12 +166,14 @@ function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: s
 		component.updateResult({ content: [{ type: "text", text: "line one\nline two" }] }, false, id);
 		return component;
 	};
-	return { rows, uninstall, transcript, tool, calls, readGroups, view: () => plain(transcript.renderViewport(100, 30, frame)) };
+	return { rows, uninstall, transcript, tool, calls, readGroups, judgeStates, view: () => plain(transcript.renderViewport(100, 30, frame)) };
 }
 
 beforeAll(async () => {
 	await initTheme(false);
 });
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
 
 test("lines mode draws a run's calls on adjacent rows, across a harness notice", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
@@ -164,7 +184,7 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		transcript.addChild(new StatusNotice("a harness notice"));
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		expect(view()).toEqual(["prompt", "", "✔ Git   git status", "✔ Grep  Finding TODOs"]);
-		await settle();
+		await judged(view);
 		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Inspect with grep"]);
 	} finally {
 		uninstall();
@@ -238,7 +258,7 @@ test("lines mode shows intents at once, lets model lines replace them, aligns co
 			"✔ Grep  Finding TODOs",
 			"✔ Read  Reading a      a.ts",
 		]);
-		await settle();
+		await judged(view);
 		expect(view().slice(2)).toEqual([
 			"✔ Read  render draws rows; plan groups runs  tool-rows-host.ts:10-40",
 			"✔ Grep  Inspect with grep",
@@ -258,7 +278,7 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
 		transcript.renderViewport(50, 30, frame);
-		await settle();
+		await judged(() => transcript.renderViewport(50, 30, frame));
 		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
 		expect(rows.map(row => Bun.stringWidth(row) <= 50)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
@@ -395,8 +415,30 @@ test("a grouped read whose args OMP stripped of the intent shows the agent's int
 		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } }]]));
 		transcript.addChild(group);
 		expect(view().slice(2)).toEqual(["✔ Read  Checking the a module  a.ts"]);
-		await settle();
+		await judged(view);
 		expect(view().slice(2)).toEqual(["✔ Read  Learning how the a module loads its config  a.ts"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("an intent the judge finds enough stays, and the model is never asked for that call", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const prompts: string[] = [];
+	const { uninstall, transcript, tool, judgeStates, view } = setup(mode, async (_system, prompt) => {
+		prompts.push(prompt);
+		return "Rummaging through the code for loose ends";
+	}, intent => (intent.startsWith("Finding") ? 0.9 : 0.1));
+	try {
+		transcript.addChild(new Text("prompt", 0, 0));
+		tool("grep", { pattern: "TODO", i: "Finding TODOs left in the tool rows host" }, "a");
+		tool("bash", { command: "ls", i: "Looking" }, "b");
+		view();
+		await judged(view);
+		expect(view().slice(2)).toEqual(["✔ Grep  Finding TODOs left in the tool rows host", "✔ Ls    Rummaging through the code for loose ends"]);
+		// Both calls went to the judge in one request; only the vague one reached the model.
+		expect(judgeStates).toHaveLength(1);
+		expect(prompts.map(prompt => JSON.parse(prompt).tool)).toEqual(["bash"]);
 	} finally {
 		uninstall();
 	}
