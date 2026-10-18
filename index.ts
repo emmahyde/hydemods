@@ -2,7 +2,8 @@ import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
-import { AssistantMessageComponent, ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
+import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
+import { installToolRuns, type RunCard } from "./lib/tool-runs";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +18,8 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { ToolRenderer } from "@oh-my-pi/pi-tui/tools";
 import { readSourceFsPath, renderFallbackToolCard, renderTaskToolCard, splitPathAndSel } from "./lib/host-copies";
-import { green, grey } from "./lib/colors";
-import { estimateTokens, formatTokens } from "./lib/tokens";
+import { green } from "./lib/colors";
+import { cardGutter, hiddenSize, rowSuffix } from "./lib/card-gutter";
 import { testSummaryLine } from "./lib/test-summary";
 import { commandSourcePath, compactBlocks, groupGrepPrefixes, isBraceLanguage, joinLoneClosers, printsLineNumbers, extensionOf, scanComments, stripComments, stripLineNumbers } from "./lib/source-text";
 import { presentReadExcerpt } from "./lib/read-display";
@@ -39,6 +40,8 @@ import { ToolRows } from "./lib/tool-rows-host";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
 import { underlineLabel, underlinePathTokens } from "./lib/path-styling";
 import { booleanSetting, enumSetting, hostOverrideSettings, integerSetting, readSetting, settings, stringSetting, watchSetting } from "./lib/settings";
+import { stylePlainBlocks } from "./lib/plain-blocks";
+import { backgroundAnsi } from "./lib/message-bg";
 import { BG_PRESETS, SURFACES, SURFACE_LABELS, installMessageBackgrounds, isHexColor, resolveBackground, type Surface, type ThemeLookups } from "./lib/message-bg";
 import { registerHelperDrawers } from "./lib/helper-drawers";
 import { installInternalLinks, linkComponentRows, linkTarget, uninstallInternalLinks } from "./lib/internal-links";
@@ -120,6 +123,20 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Shows file reads, writes, edits and source printed by bash as declaration outlines instead of raw text.",
 		category: "Interface",
 		render: () => "Declarations are parsed with tree-sitter; bodies fold to a line count. Comments and line-number gutters are always stripped from displayed source. Off shows the plain excerpt; the model sees the same output either way.",
+	},
+	{
+		name: "plain-code-blocks",
+		title: "Plain code blocks stand out",
+		description: "Tints fenced blocks that have no language tag and hangs a green bar on their left.",
+		category: "Interface",
+		render: () => "The host leaves untagged fences unhighlighted, so mockups, logs and diagrams blend into prose. Tagged blocks (```ts) keep their syntax colors.",
+	},
+	{
+		name: "tool-runs",
+		title: "Collapse earlier tool calls",
+		description: "Folds every card in an unbroken run of tool calls to its header row, keeping the newest full.",
+		category: "Interface",
+		render: () => "A run is tool calls with no user message and no assistant text between them. Failed and still-running cards stay full; Ctrl+O expands everything.",
 	},
 	{
 		name: "last-prompt-drawer",
@@ -793,37 +810,22 @@ function toolMessageRenderer(message: ToolMessage, options: RendererOptions, the
 					: tree),
 			];
 			if (selected.length > limit) {
-				if (structured.format === "outline" || structured.format === "edit-outline") {
-					// Outline rows are a list: the last row carries no summary, so count the rest.
-					const shown = Math.max(1, limit - 1);
-					selected = [...selected.slice(0, shown), theme.fg("muted", `… ${selected.length - shown} more`)];
-				} else if (limit <= 1) {
-					// One row is all the space there is, so the first content line carries the
-					// omission mark itself instead of the card showing nothing but `…`.
-					selected = [`${renderedContent[0]} ${theme.fg("muted", "…")}`];
-				} else {
-					if (limit < 3) {
-						selected = [...renderedContent.slice(0, limit - 1), theme.fg("muted", `… ${renderedContent.length - (limit - 1)} more`)];
-					} else {
-						// Output reads in order: the first rows, then the count of what follows in the last row's gutter.
-						selected = renderedContent.slice(0, limit);
-						hiddenLines = renderedContent.length - limit;
-					}
-				}
+				// Output reads in order: the first rows, with what follows reported by the size in the last gutter.
+				hiddenLines = selected.length - Math.max(1, limit);
+				selected = selected.slice(0, Math.max(1, limit));
 			}
 			if (diagnosticsAt >= 0) {
 				const messages = renderedContent.slice(diagnosticsAt + 1);
 				const kept = collapseTextLines(messages, 3, false, { marker: () => theme.fg("muted", "[...]") });
 				selected = [...selected, renderedContent[diagnosticsAt], ...kept];
 			}
-			// The rule trails off into a dashed stroke on the last row of a multi-row card.
+			// Every card ends on a dashed rule; hidden rows are reported as an estimated size (Ctrl+O shows them).
+			const hiddenText = hiddenLines > 0 && diagnosticsAt < 0 ? hiddenSize(pretty) : undefined;
 			return selected.map((line, index) => {
-				const trails = selected.length > 1 && index === selected.length - 1;
-				const prefix = index === 0 ? coloredPrefix : hangingIndent;
-				// Estimated tokens in the gutter when lines are hidden (Ctrl+O shows them).
-				const counted = trails && hiddenLines > 0 && diagnosticsAt < 0;
-				const gutter = counted ? `${theme.italic(grey(formatTokens(estimateTokens(pretty)).padEnd(indent.length)))}${trailingRule} ` : trails ? prefix.replace(rule, trailingRule) : prefix;
-				return padToolBlockLine(truncateToWidth(`${gutter}${line}`, width), width);
+				const isFirst = index === 0;
+				const isLast = index === selected.length - 1;
+				const gutter = cardGutter({ prefix: isFirst ? coloredPrefix : hangingIndent, rule, trailingRule, indentWidth: indent.length, isFirst, isLast, hiddenText });
+				return padToolBlockLine(truncateToWidth(`${gutter}${line}${rowSuffix(isFirst, isLast, hiddenText)}`, width), width);
 			});
 		},
 		invalidate() { markdown?.invalidate(); },
@@ -2030,6 +2032,9 @@ export default function hydemods(pi: ExtensionAPI): void {
 		installMessageBackgrounds(Object.getPrototypeOf(uiTheme) as ThemeLookups, AssistantMessageComponent.prototype, {
 			hexFor: (surface, light) => resolveBackground(readSetting(BG_SETTINGS[surface].preset), readSetting(BG_SETTINGS[surface].hex), light),
 			liveTheme: () => uiTheme as unknown as ThemeLookups,
+			transformRows: (rows, width, light, mode) => isTweakEnabled("plain-code-blocks")
+				? stylePlainBlocks(rows, width, backgroundAnsi(light ? "#e8ecf1" : "#1f252d", mode), visibleWidth)
+				: rows,
 		});
 		installInternalLinks(AssistantMessageComponent.prototype, () => linkTargetFor());
 	};
@@ -2040,6 +2045,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 			});
 		}
 	}
+	const toolRuns = installToolRuns(ToolExecutionComponent.prototype as unknown as RunCard, {
+		headRow: (rows, width) => truncateToWidth(rows.find(row => /\S/.test(row.replace(/\x1b\[[0-9;]*m/g, ""))) ?? "", width),
+		requestRender: () => thoughtTui?.requestRender(),
+	});
 	const restoreToolDisplay = (ctx: ExtensionContext) => {
 		lastCtx = ctx;
 		ensureBackgrounds();
@@ -2319,6 +2328,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 	};
 	pi.on("message_update", (event, ctx) => {
 		noteThought(event.message);
+		const { role, content } = event.message as { role?: unknown; content?: unknown };
+		if (role === "assistant" && Array.isArray(content) && content.some((b: { type?: string; text?: string }) => b.type === "text" && b.text?.trim())) toolRuns.close();
 		guardRunawayEdit(event.message, ctx);
 		if (event.message.role === "assistant") {
 			for (const block of event.message.content) {
@@ -2331,6 +2342,14 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => {
 		latestThought = "";
 		thoughtTui?.requestRender();
+		toolRuns.setActive(isTweakEnabled("tool-runs"));
+	});
+	pi.on("agent_end", (_event, ctx) => {
+		toolRuns.setActive(false);
+		if (!thoughtTui) repaintToolCards(ctx);
+	});
+	pi.on("message_start", (event) => {
+		if ((event.message as { role?: unknown }).role === "user") toolRuns.close();
 	});
 	// Large files come back with pruned snapshots, and the card is redrawn long after later
 	// edits change the disk. Capture the outline now, while the disk still matches this diff.

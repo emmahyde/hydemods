@@ -13,6 +13,7 @@
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { green } from "./colors";
 
 type Status = "pending" | "running" | "completed" | "failed" | "aborted";
 
@@ -97,6 +98,11 @@ const GLYPH: Record<Row["state"], { glyph: string; color: ThemeColor }> = {
 	stalled: { glyph: "⏸", color: "warning" },
 	queued: { glyph: "○", color: "dim" },
 };
+
+/** Finished work wears the shared success green; every other state keeps its theme colour. */
+function paintState(state: Row["state"], color: ThemeColor, text: string, theme: Painter): string {
+	return state === "done" ? green(text) : theme.fg(color, text);
+}
 
 /** Tool-kind colour for the activity line: reads and searches, writes, shell, everything else. */
 function toolColor(tool: string): ThemeColor {
@@ -218,7 +224,7 @@ function renderStats(items: Stat[], theme: Painter): string {
 function renderRow(row: Row, outlier: boolean, width: number, theme: Painter): string[] {
 	const g = GLYPH[row.state];
 	const nameColor: ThemeColor = row.state === "queued" ? "dim" : row.state === "done" ? "text" : row.state === "failed" ? "error" : "accent";
-	const head = `${theme.fg(g.color, g.glyph)} ${theme.fg(nameColor, theme.bold(displayId(row.id)))}`;
+	const head = `${paintState(row.state, g.color, g.glyph, theme)} ${theme.fg(nameColor, theme.bold(displayId(row.id)))}`;
 	let shown = stats(row, outlier);
 	const gap = 2;
 	const headWidth = visibleWidth(head);
@@ -243,7 +249,7 @@ function digest(rows: Row[], totalCost: number, wallMs: number | undefined, them
 	const parts: string[] = [];
 	const add = (state: Row["state"], label: string, color: ThemeColor = GLYPH[state].color) => {
 		const n = count(state);
-		if (n > 0) parts.push(theme.fg(color, `${GLYPH[state].glyph} ${n} ${label}`));
+		if (n > 0) parts.push(paintState(state, color, `${GLYPH[state].glyph} ${n} ${label}`, theme));
 	};
 	add("running", "running");
 	add("stalled", "stalled");

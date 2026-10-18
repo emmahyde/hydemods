@@ -105,3 +105,11 @@ test("a small batch keeps every finished row", () => {
 	const lines = body({ results: [done({ id: "0-A", description: "first" }), done({ id: "1-B", description: "second" })] })!.lines.map(plain);
 	expect(lines.slice(1).filter(line => line.startsWith("✓ ")).length).toBe(2);
 });
+
+test("finished tasks wear the shared success green on their glyph and in the digest", () => {
+	const lines = body({ progress: [live({ id: "0-A", status: "completed" as const }), live({ id: "1-B" })] })!.lines;
+	const GREEN = "\x1b[38;2;156;219;117m";
+	expect(lines[0]).toContain(`${GREEN}✓ 1 done`);
+	expect(lines.join("\n")).toContain(`${GREEN}✓`);
+	expect(lines.join("\n")).not.toContain(painted("success", "✓"));
+});

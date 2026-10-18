@@ -96,6 +96,8 @@ const INSTALLED = Symbol.for("hydemods.messageBackgrounds");
 export type MessageBackgroundOptions = {
  /** Hex for a surface given whether the active theme is light, or undefined to keep the theme color. */
  hexFor: (surface: Surface, light: boolean) => string | undefined;
+ /** Restyles the assistant's rows before the response background is painted; `light` is the theme lightness. */
+ transformRows?: (rows: readonly string[], width: number, light: boolean, mode: ColorMode) => readonly string[];
  /** The live Theme instance (its prototype is the one being wrapped). */
  liveTheme: () => ThemeLookups;
 };
@@ -160,13 +162,19 @@ export function installMessageBackgrounds(themeProto: ThemeLookups, assistantPro
   return hex ? cachedAnsi(hex, theme.getColorMode()) : undefined;
  };
 
+ const transformed = (rows: readonly string[], width: number): readonly string[] => {
+  if (!options.transformRows) return rows;
+  const theme = options.liveTheme();
+  return options.transformRows(rows, width, isLightHex(originals.getBgHex.call(theme, "userMessageBg")), theme.getColorMode());
+ };
+
  assistantProto.render = function(this: AssistantRows, width) {
-  const rows = originals.render.call(this, width);
+  const rows = transformed(originals.render.call(this, width), width);
   const ansi = assistantAnsi();
   return ansi ? paintRows(rows, width, ansi) : rows;
  };
  assistantProto.renderTranscriptStableRows = function(this: AssistantRows, count, width) {
-  const rows = originals.stable.call(this, count, width);
+  const rows = transformed(originals.stable.call(this, count, width), width);
   const ansi = assistantAnsi();
   return ansi ? paintRows(rows, width, ansi) : rows;
  };
