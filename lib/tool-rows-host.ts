@@ -328,7 +328,7 @@ export class ToolRows {
 			if (typeof width === "number") this.width = width;
 			// An absorbed block's call is already drawn by its head in scrollback, whatever the mode is now.
 			if (state.owner) return [];
-			if (!this.active() || !state.visible) return base(width);
+			if (!this.active() || !state.visible) return state.frozen && state.visible ? this.nativeRun(component, base(width), width) : base(width);
 			const rows = this.rowsFor(component, state, typeof width === "number" ? width : this.width);
 			return rows ?? base(width);
 		});
@@ -351,6 +351,34 @@ export class ToolRows {
 			this.changed(false);
 			return base(visible);
 		});
+	}
+
+	/**
+	 * A committed head drawn with rows off (cards mode, Ctrl+O, or a full replay of scrollback): its own
+	 * card, then the native card of every block it absorbed, in transcript order. The absorbed blocks
+	 * still draw nothing themselves, so a live redraw never repeats a call below its scrollback row.
+	 */
+	private nativeRun(component: Component, own: unknown, width: unknown): unknown {
+		const container = this.containerFor(component);
+		if (!container || !Array.isArray(own)) return own;
+		const blank = (row: string) => !row.replace(/\x1b\[[0-9;]*m/g, "").trim();
+		const rows: string[] = [...(own as string[])];
+		for (const child of container.children) {
+			if (stateOf(child)?.owner !== component) continue;
+			const render: unknown = Reflect.get(Object.getPrototypeOf(child) ?? {}, "render");
+			if (typeof render !== "function") continue;
+			const more: unknown = Reflect.apply(render, child, [width]);
+			if (!Array.isArray(more)) continue;
+			const card = [...(more as string[])];
+			while (card.length && blank(card[0]!)) card.shift();
+			while (card.length && blank(card.at(-1)!)) card.pop();
+			if (!card.length) continue;
+			// One blank row between cards, as the transcript puts between blocks; the run keeps its own trailing rows.
+			const tail: string[] = [];
+			while (rows.length && blank(rows.at(-1)!)) tail.push(rows.pop()!);
+			rows.push("", ...card, ...tail);
+		}
+		return rows;
 	}
 
 	private overrideTool(component: Component, state: BlockState): void {

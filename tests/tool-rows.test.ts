@@ -245,3 +245,28 @@ test("the head holds its place until the run closes and its summary lands, then 
 		uninstall();
 	}
 });
+
+test("a full replay in cards mode draws every call of a committed run, as a fresh cards transcript does", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool } = setup(mode);
+	try {
+		const head = tool("bash", { command: "echo alpha", i: "Echo alpha" }, "a");
+		tool("bash", { command: "echo bravo", i: "Echo bravo" }, "b");
+		tool("bash", { command: "echo charlie", i: "Echo charlie" }, "c");
+		transcript.addChild(new Text("reply", 0, 0));
+		await settle();
+		head.releaseRenderCaches();
+		mode.value = "cards";
+		const all = plain(transcript.render(100) as string[]);
+		const fresh = setup({ value: "cards" as ToolRowsMode });
+		fresh.tool("bash", { command: "echo alpha", i: "Echo alpha" }, "a");
+		fresh.tool("bash", { command: "echo bravo", i: "Echo bravo" }, "b");
+		fresh.tool("bash", { command: "echo charlie", i: "Echo charlie" }, "c");
+		fresh.transcript.addChild(new Text("reply", 0, 0));
+		const expected = plain(fresh.transcript.render(100) as string[]);
+		fresh.uninstall();
+		expect(all).toEqual(expected);
+	} finally {
+		uninstall();
+	}
+});
