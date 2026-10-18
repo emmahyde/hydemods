@@ -1,6 +1,6 @@
-import { type Component, Container, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { type Component, Container, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
-import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import {
 	AssistantMessageComponent,
 	CustomMessageComponent,
@@ -18,13 +18,16 @@ import {
 	RunSystemPrompt,
 	type RunItem,
 	type ToolRowsMode,
+	callLabel,
 	callPrompt,
+	callSubject,
 	fallbackLine,
 	outputText,
 	planRuns,
 	runPrompt,
 	titlesFromOutput,
 	toolLabel,
+	withoutLabel,
 } from "./tool-rows";
 
 /*
@@ -99,6 +102,34 @@ interface Plan {
 
 /** How long a head waits for its model lines before it lets the transcript retire it. */
 const HoldMs = 4_000;
+/** Column caps: a longer label or file name pushes only its own row's title right. */
+const MaxLabelWidth = 12;
+const MaxSubjectWidth = 28;
+/**
+ * Each tool's label colour, from theme tokens so it follows the theme. Themes have few distinct
+ * hues, so the frequent tools (read, grep, glob, find, edit) get different ones and rarer tools share.
+ * A bash row keeps `bashMode` whatever program it names. Unlisted and MCP tools use `toolTitle`.
+ */
+const ToolColor: Record<string, ThemeColor> = {
+	read: "accent",
+	grep: "warning",
+	glob: "syntaxType",
+	find: "syntaxKeyword",
+	ast_grep: "syntaxNumber",
+	lsp: "syntaxVariable",
+	web_search: "mdLink",
+	fetch: "mdLink",
+	edit: "pythonMode",
+	ast_edit: "pythonMode",
+	write: "syntaxString",
+	bash: "bashMode",
+	eval: "thinkingXhigh",
+	task: "syntaxKeyword",
+	todo: "success",
+	ask: "warning",
+};
+/** Code-like words in a title (`lineKey`, `call_model`, `Foo::Bar`, `refund!`, `run()`), lifted out of the muted text. */
+const CodeToken = /[A-Za-z_$][\w$]*(?:(?:\.|#|::)[A-Za-z_$][\w$]*)+|\b[a-z_$][\w$]*[A-Z][\w$]*|\b[A-Za-z$]\w*_\w+|\b\w+(?:\(\)|[!?](?=\s|$))/g;
 /** A plan is recomputed at most this often while nothing it reads has changed. */
 const PlanTtlMs = 40;
 const STATE = Symbol.for("hydemods.toolRows.state");
@@ -527,9 +558,18 @@ export class ToolRows {
 		return !call.sealed && (call.result === undefined || call.partial);
 	}
 
-	/** The title request for `call`, or undefined until it can be asked: a read waits for its output. */
+	/** The agent's intent (`i`) as one display line, or "" when the call has none. */
+	private intent(call: CallState): string {
+		const record = call.args && typeof call.args === "object" ? (call.args as Record<string, unknown>) : undefined;
+		return fallbackLine({ i: record?.i });
+	}
+
+	/**
+	 * The title request for `call`, or undefined when none is asked: a call with an intent shows it
+	 * and never asks; a read waits for its output.
+	 */
 	private callText(call: CallState): CallText | undefined {
-		if (!call.name || call.args === undefined) return undefined;
+		if (!call.name || call.args === undefined || this.intent(call)) return undefined;
 		if (!titlesFromOutput(call.name)) return { name: call.name, args: call.args };
 		if (!call.result || call.partial || call.result.isError) return undefined;
 		return { name: call.name, args: call.args, output: outputText(call.result.content) };
@@ -540,15 +580,25 @@ export class ToolRows {
 		return text && `call:${callPrompt(text)}`;
 	}
 
-	private lineText(call: CallState): string {
+	/**
+	 * The call's title without its file: the agent's intent as written, else the model line once it
+	 * lands (`settled`), else the call's main argument. A call with a subject never falls back to its
+	 * raw path or edit script; the subject column shows it.
+	 */
+	private title(call: CallState): { text: string; settled: boolean } {
+		const intent = this.intent(call);
+		if (intent) return { text: intent, settled: true };
 		const text = this.callText(call);
+		const subject = callSubject(call.name ?? "", call.args);
 		if (text && (call.argsComplete || call.result)) {
 			const key = `call:${callPrompt(text)}`;
 			this.lines.request(key, CallSystemPrompt, callPrompt(text));
 			const line = this.lines.get(key);
-			if (line) return line;
+			// With a subject column the model's filename lead is redundant, and sometimes wrong; without one it is the only file named.
+			const labels = [toolLabel(call.name ?? ""), callLabel(call.name ?? "", call.args)];
+			if (line) return { text: withoutLabel(subject ? line.replace(/^\S+\.\w+:\s*/, "") : line, labels), settled: true };
 		}
-		return fallbackLine(call.args);
+		return { text: subject ? "" : fallbackLine(call.args), settled: false };
 	}
 
 	private lineSettled(call: CallState, now: number): boolean {
@@ -591,7 +641,10 @@ export class ToolRows {
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
 		if (this.host.mode() === "group") return [truncateToWidth(this.groupRow(state, calls, run.closed, theme), width)];
-		return calls.map(call => truncateToWidth(this.callRow(call, theme), width));
+		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
+		const labelWidth = Math.min(MaxLabelWidth, Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length)));
+		const subjectWidth = Math.min(MaxSubjectWidth, Math.max(0, ...subjects.map(subject => (subject ? visibleWidth(subject) : 0))));
+		return calls.map((call, index) => truncateToWidth(this.callRow(call, subjects[index], labelWidth, subjectWidth, theme), width));
 	}
 
 	private runCalls(tools: readonly Component[]): CallState[] {
@@ -603,8 +656,9 @@ export class ToolRows {
 
 	/** One step as the group summary reads it. */
 	private stepLine(call: CallState): string {
-		const label = toolLabel(call.name ?? "tool");
-		const text = this.lineText(call);
+		const label = callLabel(call.name ?? "tool", call.args);
+		const subject = callSubject(call.name ?? "", call.args);
+		const text = [subject, this.title(call).text].filter(Boolean).join(" ");
 		return text ? `${label}: ${text}` : label;
 	}
 
@@ -622,16 +676,44 @@ export class ToolRows {
 		if (this.running(call)) {
 			const frames = theme.spinnerFrames;
 			const frame = call.frame === undefined || frames.length === 0 ? "•" : frames[call.frame % frames.length]!;
-			return theme.fg("muted", frame);
+			return theme.fg("accent", frame);
 		}
-		return theme.fg("dim", "•");
+		return call.result?.isError ? theme.fg("error", theme.status.error) : theme.fg("success", theme.status.success);
 	}
 
-	private callRow(call: CallState, theme: Theme): string {
-		const label = toolLabel(call.name ?? "tool");
-		const styled = call.result?.isError ? theme.fg("error", theme.bold(label)) : theme.fg("toolTitle", theme.bold(label));
-		const text = this.lineText(call);
-		return `${this.glyph(call, theme)} ${styled}${text ? theme.fg("muted", ` · ${text}`) : ""}`;
+	private label(call: CallState, theme: Theme, width = 0): string {
+		const label = callLabel(call.name ?? "tool", call.args);
+		const color = call.result?.isError ? "error" : (ToolColor[call.name ?? ""] ?? "toolTitle");
+		return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
+	}
+
+	/** `` `file.ts` `` in the theme's path colour inside dim backticks, its `:40-80` selector dimmed. */
+	private subject(subject: string, theme: Theme): string {
+		const selector = /:[\d+,-]+$/.exec(subject)?.[0] ?? "";
+		const tick = theme.fg("dim", "`");
+		return `${tick}${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}${tick}`;
+	}
+
+	/** A settled title in muted text with its code words in body text; a fallback (intent) title is dim italic. */
+	private body(title: { text: string; settled: boolean }, theme: Theme): string {
+		if (!title.settled) return theme.fg("dim", theme.italic(title.text));
+		let out = "";
+		let last = 0;
+		for (const match of title.text.matchAll(CodeToken)) {
+			out += theme.fg("muted", title.text.slice(last, match.index)) + theme.fg("text", match[0]);
+			last = match.index + match[0].length;
+		}
+		return out + theme.fg("muted", title.text.slice(last));
+	}
+
+	private callRow(call: CallState, subject: string | undefined, labelWidth: number, subjectWidth: number, theme: Theme): string {
+		const title = this.title(call);
+		const parts = [`${this.glyph(call, theme)} ${this.label(call, theme, labelWidth)}`];
+		// The column is `` `subject` ``: the widest subject plus its two backticks. A row without one pads across it.
+		if (subject) parts.push(this.subject(subject, theme) + " ".repeat(Math.max(0, subjectWidth - visibleWidth(subject))));
+		else if (subjectWidth > 0) parts.push(" ".repeat(subjectWidth + 2));
+		if (title.text) parts.push(this.body(title, theme));
+		return parts.join("  ").trimEnd();
 	}
 
 	private groupRow(state: BlockState, calls: CallState[], closed: boolean, theme: Theme): string {
@@ -639,19 +721,28 @@ export class ToolRows {
 		const live = calls.find(call => this.running(call));
 		if (closed && !live) this.ensureSummary(state, calls.map(call => this.stepLine(call)));
 		const summary = state.summaryKey ? this.lines.get(state.summaryKey) : undefined;
-		const count = theme.fg("dim", ` · ${calls.length} ${calls.length === 1 ? "call" : "calls"}`);
-		const failures = failed > 0 ? theme.fg("error", ` · ${failed} failed`) : "";
-		if (summary) return `${theme.fg("dim", "•")} ${theme.fg("toolTitle", theme.bold(summary))}${count}${failures}`;
-		const latest = live ?? calls[calls.length - 1]!;
-		const glyph = live ? this.glyph(live, theme) : theme.fg("dim", "•");
-		const tally = new Map<string, number>();
-		for (const call of calls) {
-			const label = toolLabel(call.name ?? "tool");
-			tally.set(label, (tally.get(label) ?? 0) + 1);
+		const separator = theme.fg("dim", " · ");
+		const count = `${separator}${theme.fg("dim", `${calls.length} ${calls.length === 1 ? "call" : "calls"}`)}`;
+		const failures = failed > 0 ? `${separator}${theme.fg("error", `${failed} failed`)}` : "";
+		const glyph = live ? this.glyph(live, theme) : failed > 0 ? theme.fg("error", theme.status.error) : theme.fg("success", theme.status.success);
+		if (summary) return `${glyph} ${theme.fg("toolTitle", theme.bold(summary))}${count}${failures}`;
+		if (closed && !live) {
+			const tally = new Map<string, { call: CallState; n: number }>();
+			for (const call of calls) {
+				const label = callLabel(call.name ?? "tool", call.args);
+				const entry = tally.get(label);
+				if (entry) entry.n++;
+				else tally.set(label, { call, n: 1 });
+			}
+			const head = [...tally.values()].map(({ call, n }) => this.label(call, theme) + (n > 1 ? theme.fg("dim", ` ×${n}`) : "")).join(theme.fg("dim", ", "));
+			return `${glyph} ${head}${count}${failures}`;
 		}
-		const head = closed && !live
-			? [...tally].map(([label, n]) => (n > 1 ? `${label} ×${n}` : label)).join(", ")
-			: `${toolLabel(latest.name ?? "tool")}${this.lineText(latest) ? ` · ${this.lineText(latest)}` : ""}`;
-		return `${glyph} ${theme.fg("toolTitle", theme.bold(head))}${count}${failures}`;
+		const latest = live ?? calls[calls.length - 1]!;
+		const subject = callSubject(latest.name ?? "", latest.args);
+		const title = this.title(latest);
+		const parts = [this.label(latest, theme)];
+		if (subject) parts.push(this.subject(subject, theme));
+		if (title.text) parts.push(this.body(title, theme));
+		return `${glyph} ${parts.join(" ")}${count}${failures}`;
 	}
 }

@@ -2146,6 +2146,10 @@ export default function hydemods(pi: ExtensionAPI): void {
 		const current = readSetting(toolRowsSetting);
 		const next = TOOL_ROWS_MODES[(TOOL_ROWS_MODES.indexOf(current) + 1) % TOOL_ROWS_MODES.length];
 		toolRowsSetting.set(settings, next);
+		// Redraw now rather than on the settings watcher, which is a no-op when it was set up before settings loaded.
+		lastCtx = ctx;
+		toolRows.refresh();
+		repaintToolCards(ctx);
 		if (ctx.hasUI) ctx.ui.notify(`Tool rows: ${TOOL_ROWS_MODES.map((mode) => (mode === next ? `[${mode}]` : mode)).join(" · ")}`, "info");
 	};
 	pi.registerShortcut("alt+o", { description: "Cycle hydemods tool rows (cards → lines → group)", handler: cycleToolRows });
