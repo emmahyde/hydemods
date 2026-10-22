@@ -1,6 +1,7 @@
 import type { Judge } from "@oh-my-pi/pi-ai";
 import { type Component, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import { fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import {
 	AssistantMessageComponent,
@@ -36,6 +37,7 @@ import {
 	withTone,
 } from "./tool-rows";
 import { taskCardBody, type TaskDetails } from "./task-card";
+import { createPathResolver } from "./path-links";
 
 /*
  * Tool rows draw a run of consecutive tool calls from its first block (the head); the run's other
@@ -206,6 +208,7 @@ export class ToolRows {
 	private readonly host: ToolRowsHost;
 	private readonly lines: LineCache;
 	private readonly intents: IntentJudge;
+	private readonly paths = createPathResolver(() => process.cwd());
 	private readonly transcripts = new Set<WeakRef<Container>>();
 	private readonly plans = new WeakMap<Container, Plan>();
 	private readonly containerOf = new WeakMap<Component, Container>();
@@ -816,10 +819,16 @@ export class ToolRows {
 	}
 
 	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed; a subject the wiki knows leads with a badge. */
-	private subject(subject: string, theme: Theme): string {
+	private subject(subject: string, theme: Theme, call: CallState): string {
 		const selector = /:[\d+,-]+$/.exec(subject)?.[0] ?? "";
 		const badge = this.host.knows?.(subject) ? `${theme.fg("accent", WikiBadge)} ` : "";
-		return `${badge}${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
+		const label = `${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
+		const args = call.args as { path?: unknown } | undefined;
+		const source = call.name === "read" && typeof args?.path === "string" ? args.path.trim() : undefined;
+		const location = source && /^(.*?)(?::(\d[\d+,-]*|-\d+))?(?::[a-z]+)?$/i.exec(source);
+		const path = location ? this.paths(location[1] || source!) : undefined;
+		const line = location?.[2] ? Number.parseInt(location[2], 10) : undefined;
+		return badge + (path ? fileHyperlink(path, label, line !== undefined && line > 0 ? { line } : undefined) : label);
 	}
 
 	/** A settled title in muted text with its code words in body text, its tone label dim italic; a fallback (intent) title is dim italic. */
@@ -846,7 +855,7 @@ export class ToolRows {
 		const shown = room < visibleWidth(title.text) ? { ...title, text: truncateToWidth(title.text, Math.max(0, room)) } : title;
 		const pad = Math.min(titleWidth, Math.max(0, room));
 		if (shown.text || pad > 0) parts.push(this.body(shown, theme) + " ".repeat(Math.max(0, pad - visibleWidth(shown.text))));
-		if (subject) parts.push(this.subject(subject, theme));
+		if (subject) parts.push(this.subject(subject, theme, call));
 		return parts.join("  ").trimEnd();
 	}
 

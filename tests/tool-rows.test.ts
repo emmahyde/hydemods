@@ -1,4 +1,9 @@
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
+import { applyHyperlinkSetting, fileUriForTerminal } from "@oh-my-pi/pi-tui/render/hyperlink";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
@@ -196,6 +201,37 @@ beforeAll(async () => {
 });
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
+
+test("read labels link to the original local file rather than a matching basename in the cwd", () => {
+	const root = mkdtempSync(join(tmpdir(), "hydemods-file-links-"));
+	mkdirSync(join(root, "notes with spaces"));
+	const packagePath = join(root, "package.json");
+	const skillPath = join(root, "notes with spaces", "SKILL.md");
+	const imagePath = join(root, "screenshot-2026-10-22T16-04-22-733.png");
+	for (const path of [packagePath, skillPath, imagePath]) writeFileSync(path, "");
+	const { uninstall, tool, raw, view } = setup({ value: "lines" });
+	applyHyperlinkSetting("always");
+	try {
+		tool("read", { path: `${packagePath}:1-44`, i: "Inspecting settings" }, "package");
+		tool("read", { path: `${skillPath}:raw`, i: "Learning the skill" }, "skill");
+		tool("read", { path: `~/${relative(homedir(), imagePath)}`, i: "Inspecting screenshot" }, "image");
+		tool("read", { path: "lib/tool-rows-host.ts:1-16", i: "Inspecting renderer" }, "source");
+		tool("read", { path: join(root, "missing.ts"), i: "Inspecting missing file" }, "missing");
+		const targets = raw().flatMap(row => [...row.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)/g)].map(match => match[1]));
+		expect(targets).toEqual([
+			fileUriForTerminal(packagePath, { line: 1 }, TERMINAL.id),
+			fileUriForTerminal(skillPath, undefined, TERMINAL.id),
+			fileUriForTerminal(imagePath, undefined, TERMINAL.id),
+			fileUriForTerminal(resolve("lib/tool-rows-host.ts"), { line: 1 }, TERMINAL.id),
+		]);
+		expect(view().join("\n")).toContain("package.json:1-44");
+		expect(view().join("\n")).toContain("SKILL.md");
+	} finally {
+		applyHyperlinkSetting("auto");
+		uninstall();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("lines mode draws a run's calls on adjacent rows, across a harness notice", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
