@@ -814,9 +814,9 @@ export class ToolRows {
 	private label(call: CallState, theme: Theme, width = 0): string {
 		const label = callLabel(call.name ?? "tool", call.args);
 		const color = call.result?.isError ? "error" : (ToolColor[call.name ?? ""] ?? "toolTitle");
-		const pad = " ".repeat(Math.max(0, width - label.length));
-		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label)) + pad;
-		return pill(theme, color, label.toUpperCase()) + pad;
+		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
+		// Pills in one batch share a width: the fill runs to the widest label.
+		return pill(theme, color, label.toUpperCase().padEnd(width));
 	}
 
 	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed; a subject the wiki knows leads with a badge. */
@@ -880,12 +880,13 @@ export class ToolRows {
 		}
 		const items = new Map((summary ?? "").split("\n").filter(Boolean).map(line => [line.slice(0, line.indexOf(": ")), line.slice(line.indexOf(": ") + 2)] as const));
 		const bullet = theme.fg("dim", "•");
+		const labelWidth = Math.max(0, ...[...byLabel.keys()].map(label => label.length));
 		const indent = "    ";
 		const rows = [`${glyph} ${count}${failures}`];
 		for (const [label, group] of byLabel) {
 			const last = group[group.length - 1]!;
 			const text = items.get(label) ?? [...group].reverse().map(call => this.title(call)).find(title => title.settled && title.text)?.text ?? "";
-			const head = this.label(last, theme);
+			const head = this.label(last, theme, this.host.pills?.() ? labelWidth : 0);
 			const body = text ? `${head} ${this.body({ text, settled: true }, theme)}` : head;
 			const lines = Number.isFinite(width) ? wrapTextWithAnsi(body, Math.max(1, width - indent.length)) : [body];
 			rows.push(...lines.map((line, index) => `${index === 0 ? `  ${bullet} ` : indent}${line}`));
