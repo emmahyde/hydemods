@@ -177,15 +177,15 @@ export function deviceName(name: string, args: unknown): string | undefined {
  return typeof path === "string" ? /^xd:\/\/([^/?#:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
 }
 
-/** A device's label, as a bash row names its program: an MCP device its server (`Linear`), any other device its name (`Wiki Observe`). */
+/** A device's label, as a bash row names its program: an MCP device its server (`Linear`), a wiki device its action (`wiki_status` → `Status`), any other device its name. */
 function deviceLabel(device: string): string {
- if (!device.startsWith("mcp__")) return toolLabel(device);
+ if (!device.startsWith("mcp__")) return toolLabel(device.replace(/^wiki_(?=.)/, ""));
  const server = device.slice(5).split("_").find(Boolean);
  return server ? server[0]!.toUpperCase() + server.slice(1) : toolLabel(device);
 }
 
-/** Labels shorter than the tool or device name: `context_notes` → `Notes`. */
-const LabelFor: Record<string, string> = { context_notes: "Notes", wiki_observe: "Observe" };
+/** Labels shorter than the tool name: `context_notes` → `Notes`. */
+const LabelFor: Record<string, string> = { context_notes: "Notes" };
 
 /** The row's label: a bash call shows the program it runs (`Git`, `Bun`), an `xd://` or MCP call its device (`Linear`), a skill read `Skill`, anything else its tool label. */
 export function callLabel(name: string, args: unknown): string {
