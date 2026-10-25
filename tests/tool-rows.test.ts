@@ -245,9 +245,9 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		tool("bash", { command: "git status" }, "a");
 		transcript.addChild(new StatusNotice("a harness notice"));
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
-		expect(view()).toEqual(["prompt", "", "✔ Git   git status", "✔ Grep  Finding TODOs"]);
+		expect(view()).toEqual(["prompt", "", "✔  GIT  git status", "✔ GREP  Finding TODOs"]);
 		await judged(view);
-		expect(view()).toEqual(["prompt", "", "✔ Git   Inspect with bash", "✔ Grep  Inspect with grep"]);
+		expect(view()).toEqual(["prompt", "", "✔  GIT  Inspect with bash", "✔ GREP  Inspect with grep"]);
 	} finally {
 		uninstall();
 	}
@@ -279,7 +279,7 @@ test("a call keeps the agent's intent after OMP strips it from the args it runs 
 		streamed.updateArgs({ command: "git status" }, "a");
 		streamed.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
 		// Checked before the model line lands, which then replaces the intent.
-		expect(view()).toEqual(["✔ Git  Checking status"]);
+		expect(view()).toEqual(["✔ GIT  Checking status"]);
 	} finally {
 		uninstall();
 	}
@@ -296,7 +296,7 @@ test("a card built from stripped args takes the agent's intent from the call rec
 		card.updateArgs({ command: "git status" }, "a");
 		card.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
 		// Checked before the model line lands, which then replaces the intent.
-		expect(view()).toEqual(["✔ Git  Checking status"]);
+		expect(view()).toEqual(["✔ GIT  Checking status"]);
 	} finally {
 		uninstall();
 	}
@@ -312,7 +312,7 @@ test("blocks moved into another transcript without addChild still draw as rows (
 		const live = new TranscriptContainer();
 		live.addChild(new Text("prompt", 0, 0));
 		live.children.push(...transcript.children.splice(0));
-		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", "✔ Git   Checking status", "✔ Grep  Finding TODOs"]);
+		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", "✔  GIT  Checking status", "✔ GREP  Finding TODOs"]);
 		mode.value = "cards";
 		expect(plain(live.renderViewport(100, 30, frame)).some(row => row.startsWith("✔ "))).toBe(false);
 	} finally {
@@ -330,15 +330,15 @@ test("lines mode shows intents at once, lets model lines replace them, aligns co
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
 		// The intents show as written at once; the call without one has an empty status line until the model answers.
 		expect(view().slice(2)).toEqual([
-			`✔ Read  ${" ".repeat(13)}  tool-rows-host.ts:10-40`,
-			"✔ Grep  Finding TODOs",
-			"✔ Read  Reading a      a.ts",
+			`✔ READ  ${" ".repeat(13)}  tool-rows-host.ts:10-40`,
+			"✔ GREP  Finding TODOs",
+			"✔ READ  Reading a      a.ts",
 		]);
 		await judged(view);
 		expect(view().slice(2)).toEqual([
-			"✔ Read  render draws rows; plan groups runs  tool-rows-host.ts:10-40",
-			"✔ Grep  Inspect with grep",
-			"✔ Read  render draws rows; plan groups runs  a.ts",
+			"✔ READ  render draws rows; plan groups runs  tool-rows-host.ts:10-40",
+			"✔ GREP  Inspect with grep",
+			"✔ READ  render draws rows; plan groups runs  a.ts",
 		]);
 	} finally {
 		uninstall();
@@ -358,8 +358,8 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
 		expect(rows.map(row => Bun.stringWidth(row) <= 50)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
-		expect(rows[0]).toBe("✔ Read  render draws row…  tool-rows-host.ts:10-40");
-		expect(rows[1]).toBe("✔ Grep  Inspect with grep");
+		expect(rows[0]).toBe("✔ READ  render draws row…  tool-rows-host.ts:10-40");
+		expect(rows[1]).toBe("✔ GREP  Inspect with grep");
 		expect(rows[2]).toEndWith("  a.ts");
 		expect(rows[2]!.indexOf("a.ts")).toBe(rows[0]!.indexOf("tool-rows-host.ts"));
 	} finally {
@@ -378,7 +378,7 @@ test("a title longer than the others still lines up every row's file", () => {
 		tool("edit", { input: "[a.txt#ABCD]\nPUT 1.=1:\n+x", i: "Making a change" }, "c");
 		const rows = view().slice(2);
 		const column = rows[0]!.indexOf("tool-rows-host.ts");
-		expect(rows[0]).toBe(`✔ Read  ${long}  tool-rows-host.ts:698-712`);
+		expect(rows[0]).toBe(`✔ READ  ${long}  tool-rows-host.ts:698-712`);
 		expect(rows.slice(1).map(row => row.lastIndexOf("a.txt"))).toEqual([column, column]);
 	} finally {
 		uninstall();
@@ -393,7 +393,7 @@ test("a call with no subject column keeps the model's filename lead", async () =
 		tool("grep", { pattern: "resolveApproval" }, "a");
 		view();
 		await settle();
-		expect(view().slice(2)).toEqual(["✔ Grep  approval.ts: function resolveApproval"]);
+		expect(view().slice(2)).toEqual(["✔ GREP  approval.ts: function resolveApproval"]);
 	} finally {
 		uninstall();
 	}
@@ -406,13 +406,13 @@ test("a live group lists its calls line by line, then the head holds until its p
 		const head = tool("bash", { command: "ls", i: "Listing files" }, "a");
 		tool("read", { path: "src/a.ts", i: "Reading a.ts" }, "b");
 		await settle();
-		expect(view()).toEqual(["✔ Ls    Listing files", "✔ Read  Reading a.ts   a.ts"]);
+		expect(view()).toEqual(["✔   LS  Listing files", "✔ READ  Reading a.ts   a.ts"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		transcript.addChild(new Text("reply", 0, 0));
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		await settle();
 		// One bullet per distinct tool in first-use order; the first line for a label wins, unknown labels drop.
-		const rows = ["✔ 2 calls", "  • Ls Surveyed the sample project", "  • Read Chose to read a.ts first"];
+		const rows = ["✔ 2 calls", "  •   LS Surveyed the sample project", "  • READ Chose to read a.ts first"];
 		expect(view()).toEqual([...rows, "", "reply"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(true);
 		const batch = transcript.peekFinalizedBatch(100, 1);
@@ -436,7 +436,7 @@ test("a closed group without the model's bullets shows each tool's last settled 
 		tool("edit", { input: "[src/b.ts#3C4D]\nPUT 1.=1:\n+y", i: "Making b import x" }, "d");
 		transcript.addChild(new Text("reply", 0, 0));
 		await settle();
-		expect(view().slice(0, 4)).toEqual(["✔ 4 calls", "  • Read Understanding the a module", "  • Edit Making b import x", "  • Bun Running the tests"]);
+		expect(view().slice(0, 4)).toEqual(["✔ 4 calls", "  • READ Understanding the a module", "  • EDIT Making b import x", "  •  BUN Running the tests"]);
 	} finally {
 		uninstall();
 	}
@@ -450,7 +450,7 @@ test("a group bullet wider than the pane wraps under its own text instead of bei
 		transcript.addChild(new Text("reply", 0, 0));
 		transcript.renderViewport(30, 30, frame);
 		await settle();
-		expect(plain(transcript.renderViewport(30, 30, frame)).slice(0, 4)).toEqual(["✔ 1 call", "  • Read Moved the file column", "    last so every row lines up", ""]);
+		expect(plain(transcript.renderViewport(30, 30, frame)).slice(0, 4)).toEqual(["✔ 1 call", "  • READ Moved the file column", "    last so every row lines up", ""]);
 	} finally {
 		uninstall();
 	}
@@ -468,9 +468,9 @@ test("a group bullet longer than a call line keeps every word and wraps under it
 		const rows = plain(transcript.renderViewport(40, 30, frame));
 		const bullet = rows.slice(1, rows.indexOf(""));
 		expect(long.length).toBeGreaterThan(96);
-		expect(bullet[0]).toStartWith("  • Read Moved");
+		expect(bullet[0]).toStartWith("  • READ Moved");
 		expect(bullet.slice(1).every(row => /^ {4}\S/.test(row))).toBe(true);
-		expect(bullet.map(row => row.slice(4)).join(" ")).toBe(`Read ${long}`);
+		expect(bullet.map(row => row.slice(4)).join(" ")).toBe(`READ ${long}`);
 	} finally {
 		uninstall();
 	}
@@ -486,7 +486,7 @@ test("a task row names its agents and keeps the subagent footer under it", async
 		const progress = [{ id: "0-AuthRefactor", status: "running", task: "t", description: "split the refresh path", recentTools: [], toolCount: 2, requests: 3, cost: 0, durationMs: 0 }];
 		task.updateResult({ content: [], details: { progress } }, true, "a");
 		const rows = view().slice(2);
-		expect(rows[0]).toMatch(/^. Task  Splitting the auth refresh path  AuthRefactor \+1$/);
+		expect(rows[0]).toMatch(/^• TASK  Splitting the auth refresh path  AuthRefactor \+1$/);
 		expect(rows[1]).toStartWith("    ◐ 1 running");
 		expect(rows[2]).toContain("AuthRefactor");
 		expect(rows[2]).toStartWith("    ");
@@ -502,7 +502,7 @@ test("a row whose subject the wiki knows leads its subject with a badge, and the
 		transcript.addChild(new Text("prompt", 0, 0));
 		tool("read", { path: "lib/gallery.ts", i: "Seeing the gallery" }, "a");
 		tool("read", { path: "lib/a.ts", i: "Seeing a" }, "b");
-		expect(view().slice(2)).toEqual(["✔ Read  Seeing the gallery  ◆ gallery.ts", "✔ Read  Seeing a            a.ts"]);
+		expect(view().slice(2)).toEqual(["✔ READ  Seeing the gallery  ◆ gallery.ts", "✔ READ  Seeing a            a.ts"]);
 	} finally {
 		uninstall();
 	}
@@ -536,9 +536,9 @@ test("a grouped read whose args OMP stripped of the intent shows the agent's int
 		calls.set("r1", { name: "read", args: { path: "src/a.ts", i: "Checking the a module" } });
 		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } }]]));
 		transcript.addChild(group);
-		expect(view().slice(2)).toEqual(["✔ Read  Checking the a module  a.ts"]);
+		expect(view().slice(2)).toEqual(["✔ READ  Checking the a module  a.ts"]);
 		await judged(view);
-		expect(view().slice(2)).toEqual(["✔ Read  Learning how the a module loads its config  a.ts"]);
+		expect(view().slice(2)).toEqual(["✔ READ  Learning how the a module loads its config  a.ts"]);
 	} finally {
 		uninstall();
 	}
@@ -557,7 +557,7 @@ test("an intent the judge finds enough stays, and the model is never asked for t
 		tool("bash", { command: "ls", i: "Looking" }, "b");
 		view();
 		await judged(view);
-		expect(view().slice(2)).toEqual(["✔ Grep  Finding TODOs left in the tool rows host", "✔ Ls    Rummaging through the code for loose ends"]);
+		expect(view().slice(2)).toEqual(["✔ GREP  Finding TODOs left in the tool rows host", "✔   LS  Rummaging through the code for loose ends"]);
 		// Both calls went to the judge in one request; only the vague one reached the model.
 		expect(judgeStates).toHaveLength(1);
 		expect(prompts.map(prompt => JSON.parse(prompt).tool)).toEqual(["bash"]);
@@ -578,7 +578,7 @@ test("a skill read is labelled Skill, names the skill, and asks the model to sum
 		tool("read", { path: "skill://model-native-prompt/references/dispatch.md" }, "a");
 		view();
 		await settle();
-		expect(view().slice(2)).toEqual(["✔ Skill  Learning to write prompts native to each model  model-native-prompt"]);
+		expect(view().slice(2)).toEqual(["✔ SKILL  Learning to write prompts native to each model  model-native-prompt"]);
 		expect(prompts.some(text => text.includes("skill:// path") && text.includes("skill://model-native-prompt/references/dispatch.md"))).toBe(true);
 	} finally {
 		uninstall();
@@ -619,11 +619,11 @@ test("xd:// and MCP calls are labelled by their device, as bash rows are by thei
 		tool("write", { path: "xd://wiki_observe", content: "{}", i: "Noting the decision" }, "d");
 		tool("mcp__blender_mcp_get_objects_summary", { i: "Listing objects" }, "e");
 		expect(view().map(row => row.replace(/\[[^\]]+\] /, ""))).toEqual([
-			"✔ Git           Checking status",
-			"✔ Linear        Fetching the issue",
-			"✔ Dash          Reading the docs",
-			"✔ Wiki Observe  Noting the decision",
-			"✔ Blender       Listing objects",
+			"✔          GIT  Checking status",
+			"✔       LINEAR  Fetching the issue",
+			"✔         DASH  Reading the docs",
+			"✔ WIKI OBSERVE  Noting the decision",
+			"✔      BLENDER  Listing objects",
 		]);
 	} finally { uninstall(); }
 });

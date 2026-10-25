@@ -831,7 +831,8 @@ export class ToolRows {
 		const name = call.name ?? "";
 		const fixed = deviceName(name, call.args) ? undefined : ToolColor[name];
 		const color = call.result?.isError ? "error" : (fixed ?? letterColor(label));
-		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
+		// Text labels are upper case and right-aligned in their batch, so every title starts in the same column.
+		if (!this.host.pills?.()) return " ".repeat(Math.max(0, width - label.length)) + theme.fg(color, theme.bold(label.toUpperCase()));
 		// Pills in one batch share a width: the fill runs to the widest label.
 		return pill(theme, color, label.toUpperCase().padEnd(width));
 	}
@@ -902,7 +903,7 @@ export class ToolRows {
 		for (const [label, group] of byLabel) {
 			const last = group[group.length - 1]!;
 			const text = items.get(label) ?? [...group].reverse().map(call => this.title(call)).find(title => title.settled && title.text)?.text ?? "";
-			const head = this.label(last, theme, this.host.pills?.() ? labelWidth : 0);
+			const head = this.label(last, theme, labelWidth);
 			const body = text ? `${head} ${this.body({ text, settled: true }, theme)}` : head;
 			const lines = Number.isFinite(width) ? wrapTextWithAnsi(body, Math.max(1, width - indent.length)) : [body];
 			rows.push(...lines.map((line, index) => `${index === 0 ? `  ${bullet} ` : indent}${line}`));
