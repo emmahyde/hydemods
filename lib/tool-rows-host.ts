@@ -33,9 +33,7 @@ import {
 	runPrompt,
 	titlesFromOutput,
 	toolLabel,
-	ToneLabel,
 	withoutLabel,
-	withTone,
 } from "./tool-rows";
 import { taskCardBody, type TaskDetails } from "./task-card";
 import { createPathResolver } from "./path-links";
@@ -755,7 +753,7 @@ export class ToolRows {
 		if (this.host.mode() === "group" && run.closed && !calls.some(call => this.running(call))) {
 			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));
 		}
-		const titles = calls.map(call => this.toned(call, this.title(call)));
+		const titles = calls.map(call => this.title(call));
 		const labelWidth = Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length));
 		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
@@ -774,12 +772,6 @@ export class ToolRows {
 		const room = Number.isFinite(width) ? Math.max(20, width - indent.length) : 100;
 		const body = taskCardBody(call.result?.details as TaskDetails | undefined, { expanded: false, width: room, nowMs: Date.now() }, theme);
 		return (body?.lines ?? []).map(line => truncateToWidth(indent + line, Number.isFinite(width) ? width : Infinity));
-	}
-
-	/** A finished call's settled title, with an Elcor tone label on some rows. Group rows and step lines never get one. */
-	private toned(call: CallState, title: { text: string; settled: boolean }): { text: string; settled: boolean } {
-		if (!title.settled || !call.id || !call.result || call.partial) return title;
-		return { ...title, text: withTone(title.text, { id: call.id, name: call.name ?? "", args: call.args, failed: call.result.isError === true }) };
 	}
 
 	/** The run's calls in order, each told the stable steps just before it, so its line request has context. */
@@ -849,12 +841,11 @@ export class ToolRows {
 		return badge + (path ? fileHyperlink(path, label, line !== undefined && line > 0 ? { line } : undefined) : label);
 	}
 
-	/** A settled title in muted text with its code words in body text, its tone label dim italic; a fallback (intent) title is dim italic. */
+	/** A settled title in muted text with its code words in body text; a fallback (intent) title is dim italic. */
 	private body(title: { text: string; settled: boolean }, theme: Theme): string {
 		if (!title.settled) return theme.fg("dim", theme.italic(title.text));
-		const tone = ToneLabel.exec(title.text)?.[0] ?? "";
-		const text = title.text.slice(tone.length);
-		let out = tone ? theme.fg("dim", theme.italic(tone.trimEnd())) + " " : "";
+		const text = title.text;
+		let out = "";
 		let last = 0;
 		for (const match of text.matchAll(CodeToken)) {
 			out += theme.fg("muted", text.slice(last, match.index)) + theme.fg("text", match[0]);

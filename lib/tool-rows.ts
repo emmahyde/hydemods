@@ -350,46 +350,6 @@ export function runPrompt(lines: readonly string[]): string {
  return JSON.stringify(shown);
 }
 
-/** A leading Elcor tone label on a row: `[weary resignation] Checking …`. */
-export const ToneLabel = /^\[[a-z' -]+\] /;
-
-/**
- * Elcor tone labels (Mass Effect): the speaker names the mood before the statement. A row picks
- * its mood from what the call is and how it ended. The local model never offers one, whatever
- * its prompt asks (0 of 24 replies, 2026-10-18), so the code chooses.
- */
-const Moods: Record<string, readonly string[]> = {
- failed: ["stoic acceptance", "faint dread"],
- destructive: ["polite alarm"],
- test: ["cautious optimism", "renewed hope"],
- git: ["bemused patience", "dry amusement"],
- search: ["mild suspicion", "grudging curiosity"],
- read: ["grudging curiosity", "reluctant admiration"],
- change: ["quiet resolve", "muted triumph"],
- other: ["deadpan", "weary resignation"],
-};
-
-function moodKind(name: string, args: unknown, failed: boolean): string {
- if (failed) return "failed";
- const command = args && typeof args === "object" && "command" in args && typeof args.command === "string" ? args.command : "";
- if (/\brm\s+-\w*[rf]|reset\s+--hard|push\s+(?:-f\b|--force)|\bdrop\s+(?:table|database)\b/i.test(command)) return "destructive";
- if (/\b(?:test|spec|vitest|jest|pytest|rspec|tsc|typecheck|lint)\b/.test(command)) return "test";
- if (/^\s*git\b/.test(command)) return "git";
- if (/^(?:grep|find|glob|ast_grep|web_search|search)$/.test(name)) return "search";
- if (name === "read") return "read";
- if (/^(?:edit|write|ast_edit)$/.test(name)) return "change";
- return "other";
-}
-
-/** `[mood] text` on about one finished call in `every`; the call's id picks, so a redraw never flips it. */
-export function withTone(text: string, call: { id: string; name: string; args: unknown; failed: boolean }, every = 4): string {
- let hash = 0;
- for (let i = 0; i < call.id.length; i++) hash = (hash * 31 + call.id.charCodeAt(i)) >>> 0;
- if (!text || hash % every !== 0) return text;
- const moods = Moods[moodKind(call.name, call.args, call.failed)]!;
- return `[${moods[Math.floor(hash / every) % moods.length]}] ${text}`;
-}
-
 /** One display line from a model reply, cut at `max`, or undefined when the reply is not a usable phrase. */
 export function cleanLine(text: string, max = MaxLineLength): string | undefined {
  // Bound work on an untrusted reply independently of the token limit.
