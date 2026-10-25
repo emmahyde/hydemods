@@ -831,8 +831,8 @@ export class ToolRows {
 		const name = call.name ?? "";
 		const fixed = deviceName(name, call.args) ? undefined : ToolColor[name];
 		const color = call.result?.isError ? "error" : (fixed ?? letterColor(label));
-		// Text labels are upper case and right-aligned in their batch, so every title starts in the same column.
-		if (!this.host.pills?.()) return " ".repeat(Math.max(0, width - label.length)) + theme.fg(color, theme.bold(label.toUpperCase()));
+		// Text labels are upper case and left-aligned; padding to the batch's widest label starts every title in the same column.
+		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label.toUpperCase())) + " ".repeat(Math.max(0, width - label.length));
 		// Pills in one batch share a width: the fill runs to the widest label.
 		return pill(theme, color, label.toUpperCase().padEnd(width));
 	}

@@ -246,9 +246,9 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		tool("bash", { command: "git status" }, "a");
 		transcript.addChild(new StatusNotice("a harness notice"));
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
-		expect(view()).toEqual(["prompt", "", "✔  GIT  git status", "✔ GREP  Finding TODOs"]);
+		expect(view()).toEqual(["prompt", "", "✔ GIT   git status", "✔ GREP  Finding TODOs"]);
 		await judged(view);
-		expect(view()).toEqual(["prompt", "", "✔  GIT  Inspect with bash", "✔ GREP  Inspect with grep"]);
+		expect(view()).toEqual(["prompt", "", "✔ GIT   Inspect with bash", "✔ GREP  Inspect with grep"]);
 	} finally {
 		uninstall();
 	}
@@ -313,7 +313,7 @@ test("blocks moved into another transcript without addChild still draw as rows (
 		const live = new TranscriptContainer();
 		live.addChild(new Text("prompt", 0, 0));
 		live.children.push(...transcript.children.splice(0));
-		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", "✔  GIT  Checking status", "✔ GREP  Finding TODOs"]);
+		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", "✔ GIT   Checking status", "✔ GREP  Finding TODOs"]);
 		mode.value = "cards";
 		expect(plain(live.renderViewport(100, 30, frame)).some(row => row.startsWith("✔ "))).toBe(false);
 	} finally {
@@ -407,13 +407,13 @@ test("a live group lists its calls line by line, then the head holds until its p
 		const head = tool("bash", { command: "ls", i: "Listing files" }, "a");
 		tool("read", { path: "src/a.ts", i: "Reading a.ts" }, "b");
 		await settle();
-		expect(view()).toEqual(["✔   LS  Listing files", "✔ READ  Reading a.ts   a.ts"]);
+		expect(view()).toEqual(["✔ LS    Listing files", "✔ READ  Reading a.ts   a.ts"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		transcript.addChild(new Text("reply", 0, 0));
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
 		await settle();
 		// One bullet per distinct tool in first-use order; the first line for a label wins, unknown labels drop.
-		const rows = ["✔ 2 calls", "  •   LS Surveyed the sample project", "  • READ Chose to read a.ts first"];
+		const rows = ["✔ 2 calls", "  • LS   Surveyed the sample project", "  • READ Chose to read a.ts first"];
 		expect(view()).toEqual([...rows, "", "reply"]);
 		expect(head.isTranscriptBlockFinalized()).toBe(true);
 		const batch = transcript.peekFinalizedBatch(100, 1);
@@ -437,7 +437,7 @@ test("a closed group without the model's bullets shows each tool's last settled 
 		tool("edit", { input: "[src/b.ts#3C4D]\nPUT 1.=1:\n+y", i: "Making b import x" }, "d");
 		transcript.addChild(new Text("reply", 0, 0));
 		await settle();
-		expect(view().slice(0, 4)).toEqual(["✔ 4 calls", "  • READ Understanding the a module", "  • EDIT Making b import x", "  •  BUN Running the tests"]);
+		expect(view().slice(0, 4)).toEqual(["✔ 4 calls", "  • READ Understanding the a module", "  • EDIT Making b import x", "  • BUN  Running the tests"]);
 	} finally {
 		uninstall();
 	}
@@ -558,7 +558,7 @@ test("an intent the judge finds enough stays, and the model is never asked for t
 		tool("bash", { command: "ls", i: "Looking" }, "b");
 		view();
 		await judged(view);
-		expect(view().slice(2)).toEqual(["✔ GREP  Finding TODOs left in the tool rows host", "✔   LS  Rummaging through the code for loose ends"]);
+		expect(view().slice(2)).toEqual(["✔ GREP  Finding TODOs left in the tool rows host", "✔ LS    Rummaging through the code for loose ends"]);
 		// Both calls went to the judge in one request; only the vague one reached the model.
 		expect(judgeStates).toHaveLength(1);
 		expect(prompts.map(prompt => JSON.parse(prompt).tool)).toEqual(["bash"]);
@@ -620,11 +620,11 @@ test("xd:// and MCP calls are labelled by their device, as bash rows are by thei
 		tool("write", { path: "xd://wiki_observe", content: "{}", i: "Noting the decision" }, "d");
 		tool("mcp__blender_mcp_get_objects_summary", { i: "Listing objects" }, "e");
 		expect(view().map(row => row.replace(/\[[^\]]+\] /, ""))).toEqual([
-			"✔          GIT  Checking status",
-			"✔       LINEAR  Fetching the issue",
-			"✔         DASH  Reading the docs",
+			"✔ GIT           Checking status",
+			"✔ LINEAR        Fetching the issue",
+			"✔ DASH          Reading the docs",
 			"✔ WIKI OBSERVE  Noting the decision",
-			"✔      BLENDER  Listing objects",
+			"✔ BLENDER       Listing objects",
 		]);
 	} finally { uninstall(); }
 });
