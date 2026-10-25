@@ -46,23 +46,26 @@ export type PathResolver = (token: string) => string | undefined;
 
 /**
  * Absolute path for `token` when it names an existing file or directory, else undefined. Only
- * tokens that look like paths are checked (a slash, a `~/` prefix, or a `name.ext` filename), and
- * results are cached so a repaint never re-stats the same token.
+ * tokens that look like paths are checked (a slash, a `~/` prefix, or a `name.ext` filename).
+ * A hit is cached so a repaint never re-stats it. A miss is cached for `missMs` only: a row for a
+ * write paints before its file exists, and must link once the write lands.
  */
-export function createPathResolver(cwd: () => string, exists: (path: string) => boolean = defaultExists, limit = 2000): PathResolver {
-	const cache = new Map<string, string | undefined>();
+export function createPathResolver(cwd: () => string, exists: (path: string) => boolean = defaultExists, limit = 2000, missMs = 1000, now: () => number = Date.now): PathResolver {
+	const cache = new Map<string, { path: string | undefined; at: number }>();
 	return token => {
 		const base = cwd();
 		const key = `${base}\0${token}`;
-		if (cache.has(key)) return cache.get(key);
+		const cached = cache.get(key);
+		if (cached && (cached.path || now() - cached.at < missMs)) return cached.path;
 		let result: string | undefined;
 		if (looksLikePath(token)) {
 			const expanded = token === "~" || token.startsWith("~/") ? homedir() + token.slice(1) : token;
 			const absolute = isAbsolute(expanded) ? expanded : resolve(base, expanded);
 			if (exists(absolute)) result = absolute;
 		}
+		cache.delete(key);
 		if (cache.size >= limit) cache.delete(cache.keys().next().value!);
-		cache.set(key, result);
+		cache.set(key, { path: result, at: now() });
 		return result;
 	};
 }
