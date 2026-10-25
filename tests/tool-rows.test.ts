@@ -86,7 +86,8 @@ test("a bash row is labelled by the program its command runs", () => {
 	expect(callLabel("bash", { command: "git pull\ngit log" })).toBe("Git");
 	expect(callLabel("bash", { command: "" })).toBe("Bash");
 	expect(callLabel("web_search", { query: "x" })).toBe("Web Search");
-	expect(callLabel("xd__wiki_observe", {})).toBe("Wiki Observe");
+	expect(callLabel("xd__wiki_observe", {})).toBe("Observe");
+	expect(callLabel("context_notes", {})).toBe("Notes");
 });
 
 test("small models' tool prefixes are stripped from titles", () => {
@@ -620,11 +621,11 @@ test("xd:// and MCP calls are labelled by their device, as bash rows are by thei
 		tool("write", { path: "xd://wiki_observe", content: "{}", i: "Noting the decision" }, "d");
 		tool("mcp__blender_mcp_get_objects_summary", { i: "Listing objects" }, "e");
 		expect(view().map(row => row.replace(/\[[^\]]+\] /, ""))).toEqual([
-			"✔ GIT           Checking status",
-			"✔ LINEAR        Fetching the issue",
-			"✔ DASH          Reading the docs",
-			"✔ WIKI OBSERVE  Noting the decision",
-			"✔ BLENDER       Listing objects",
+			"✔ GIT      Checking status",
+			"✔ LINEAR   Fetching the issue",
+			"✔ DASH     Reading the docs",
+			"✔ OBSERVE  Noting the decision",
+			"✔ BLENDER  Listing objects",
 		]);
 	} finally { uninstall(); }
 });
