@@ -10,7 +10,7 @@ import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, toolLabel, withoutCopiedLines, withoutLabel, withTone, type ToolRowsMode } from "../lib/tool-rows";
-import { ToolRows } from "../lib/tool-rows-host";
+import { letterColor, ToolRows } from "../lib/tool-rows-host";
 
 test("a model line copied from the prompt's examples is dropped, so the row keeps the intent", () => {
 	expect(withoutCopiedLines("Looking for where approvalMode is set", CallSystemPrompt)).toBeUndefined();
@@ -217,12 +217,16 @@ test("read labels link to the original local file rather than a matching basenam
 		tool("read", { path: `~/${relative(homedir(), imagePath)}`, i: "Inspecting screenshot" }, "image");
 		tool("read", { path: "lib/tool-rows-host.ts:1-16", i: "Inspecting renderer" }, "source");
 		tool("read", { path: join(root, "missing.ts"), i: "Inspecting missing file" }, "missing");
+		tool("write", { path: packagePath, content: "{}", i: "Writing settings" }, "write");
+		tool("edit", { input: `[${skillPath}#ABCD]\nPUT 1.=1:\n+x`, i: "Changing the skill" }, "edit");
 		const targets = raw().flatMap(row => [...row.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)/g)].map(match => match[1]));
 		expect(targets).toEqual([
 			fileUriForTerminal(packagePath, { line: 1 }, TERMINAL.id),
 			fileUriForTerminal(skillPath, undefined, TERMINAL.id),
 			fileUriForTerminal(imagePath, undefined, TERMINAL.id),
 			fileUriForTerminal(resolve("lib/tool-rows-host.ts"), { line: 1 }, TERMINAL.id),
+			fileUriForTerminal(packagePath, undefined, TERMINAL.id),
+			fileUriForTerminal(skillPath, undefined, TERMINAL.id),
 		]);
 		expect(view().join("\n")).toContain("package.json:1-44");
 		expect(view().join("\n")).toContain("SKILL.md");
@@ -622,4 +626,11 @@ test("xd:// and MCP calls are labelled by their device, as bash rows are by thei
 			"✔ Blender       Listing objects",
 		]);
 	} finally { uninstall(); }
+});
+
+test("labels without a fixed colour take one from their first letter", () => {
+	expect(letterColor("Git")).toBe(letterColor("grep"));
+	expect(letterColor("Git")).not.toBe(letterColor("Bun"));
+	expect(letterColor("Linear")).not.toBe(letterColor("Mkdir"));
+	expect(letterColor("")).toBeDefined();
 });

@@ -22,6 +22,7 @@ import {
 	type RunItem,
 	type ToolRowsMode,
 	callLabel,
+	deviceName,
 	callPrompt,
 	callSubject,
 	toolBullets,
@@ -135,7 +136,7 @@ const WikiBadge = "◆";
 /**
  * Each tool's label colour, from theme tokens so it follows the theme. Themes have few distinct
  * hues, so the frequent tools (read, grep, glob, find, edit) get different ones and rarer tools share.
- * A bash row keeps `bashMode` whatever program it names. Unlisted and MCP tools use `toolTitle`.
+ * Bash rows, MCP and `xd://` calls, and unlisted tools take a colour from their label's first letter.
  */
 const ToolColor: Record<string, ThemeColor> = {
 	read: "accent",
@@ -149,12 +150,26 @@ const ToolColor: Record<string, ThemeColor> = {
 	edit: "pythonMode",
 	ast_edit: "pythonMode",
 	write: "syntaxString",
-	bash: "bashMode",
+	// bash: coloured by its program's first letter, so `git`, `bun` and `ls` rows differ.
 	eval: "thinkingXhigh",
 	task: "syntaxKeyword",
 	todo: "success",
 	ask: "warning",
 };
+/** Distinct hues, so labels that start with different letters mostly get different colours. */
+const LetterColors: readonly ThemeColor[] = ["mdHeading", "syntaxFunction", "mdCode", "syntaxKeyword", "syntaxString", "syntaxNumber", "success", "warning"];
+/** The colour for a label with no fixed one: `Git`, `Linear`, `Wiki Status` by their first letter. */
+export function letterColor(label: string): ThemeColor {
+	const code = label.trim().toUpperCase().charCodeAt(0);
+	return LetterColors[(Number.isNaN(code) ? 0 : code) % LetterColors.length]!;
+}
+/** The path a row's subject names, as the agent wrote it: a read's or write's `path`, an edit's first `[file#TAG]` header. */
+function subjectSource(call: CallState): string | undefined {
+	const args = call.args as { path?: unknown; input?: unknown } | undefined;
+	if ((call.name === "read" || call.name === "write") && typeof args?.path === "string") return args.path.trim();
+	if (call.name === "edit" && typeof args?.input === "string") return /^\[([^\]#\n]+)#[0-9A-F]{4}\]/m.exec(args.input)?.[1]?.trim().replace(/^"|"$/g, "");
+	return undefined;
+}
 /** Code-like words in a title (`lineKey`, `call_model`, `Foo::Bar`, `refund!`, `run()`), lifted out of the muted text. */
 const CodeToken = /[A-Za-z_$][\w$]*(?:(?:\.|#|::)[A-Za-z_$][\w$]*)+|\b[a-z_$][\w$]*[A-Z][\w$]*|\b[A-Za-z$]\w*_\w+|\b\w+(?:\(\)|[!?](?=\s|$))/g;
 /** A plan is recomputed at most this often while nothing it reads has changed. */
@@ -813,7 +828,9 @@ export class ToolRows {
 
 	private label(call: CallState, theme: Theme, width = 0): string {
 		const label = callLabel(call.name ?? "tool", call.args);
-		const color = call.result?.isError ? "error" : (ToolColor[call.name ?? ""] ?? "toolTitle");
+		const name = call.name ?? "";
+		const fixed = deviceName(name, call.args) ? undefined : ToolColor[name];
+		const color = call.result?.isError ? "error" : (fixed ?? letterColor(label));
 		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label)) + " ".repeat(Math.max(0, width - label.length));
 		// Pills in one batch share a width: the fill runs to the widest label.
 		return pill(theme, color, label.toUpperCase().padEnd(width));
@@ -824,8 +841,7 @@ export class ToolRows {
 		const selector = /:[\d+,-]+$/.exec(subject)?.[0] ?? "";
 		const badge = this.host.knows?.(subject) ? `${theme.fg("accent", WikiBadge)} ` : "";
 		const label = `${theme.fg("statusLinePath", subject.slice(0, subject.length - selector.length))}${selector ? theme.fg("dim", selector) : ""}`;
-		const args = call.args as { path?: unknown } | undefined;
-		const source = call.name === "read" && typeof args?.path === "string" ? args.path.trim() : undefined;
+		const source = subjectSource(call);
 		const location = source && /^(.*?)(?::(\d[\d+,-]*|-\d+))?(?::[a-z]+)?$/i.exec(source);
 		const path = location ? this.paths(location[1] || source!) : undefined;
 		const line = location?.[2] ? Number.parseInt(location[2], 10) : undefined;
