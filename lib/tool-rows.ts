@@ -4,10 +4,11 @@ import { stripControls } from "./eval-summary";
 /**
  * How tool calls draw in the transcript.
  * - `cards`: OMP's tool cards, untouched.
+ * - `ast`: hydemods cards with reads, writes, edits, grep hits and printed source as declaration outlines.
  * - `lines`: one row per call, described by a local model, consecutive rows with no gap.
  * - `group`: one row per burst of calls, summarized by a local model once the burst ends.
  */
-export const TOOL_ROWS_MODES = ["cards", "lines", "group"] as const;
+export const TOOL_ROWS_MODES = ["cards", "ast", "lines", "group"] as const;
 export type ToolRowsMode = (typeof TOOL_ROWS_MODES)[number];
 
 /* --------------------------------- runs ---------------------------------- */

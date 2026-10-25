@@ -284,7 +284,8 @@ export class ToolRows {
 	}
 
 	private active(): boolean {
-		return this.host.mode() !== "cards" && !this.host.expanded();
+		const mode = this.host.mode();
+		return mode !== "cards" && mode !== "ast" && !this.host.expanded();
 	}
 
 	private changed(repaint: boolean): void {

@@ -286,10 +286,15 @@ const collapsedLinesSetting = integerSetting(
 const toolRowsSetting = enumSetting(
 	"tool-rows",
 	"Tool rows",
-	"How tool calls draw. cards: OMP's tool cards. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. Ctrl+O shows the cards.",
+	"How tool calls draw. cards: tool cards with plain output. ast: tool cards with reads, writes, edits, grep hits and printed source as declaration outlines. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. Ctrl+O shows the cards.",
 	TOOL_ROWS_MODES,
 	"group",
 );
+/** Declaration outlines: always in `ast` mode, never in plain `cards`; in lines/group (Ctrl+O cards) the AST structuring tweak decides. */
+const astOutlines = (): boolean => {
+	const mode = readSetting(toolRowsSetting);
+	return mode === "ast" || (mode !== "cards" && isTweakEnabled("ast-structuring"));
+};
 const toolRowsModelSetting = stringSetting(
 	"tool-rows-model",
 	"Tool rows model",
@@ -1699,7 +1704,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 			return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details }, { expanded: false }, theme, takeover.display, { text: line, format: "command" });
 		}
 	}
-	const astOn = isTweakEnabled("ast-structuring");
+	const astOn = astOutlines();
 	const outline = !astOn ? undefined : toolName === "read" ? readOutlineStructured(result, args) : toolName === "edit" ? editOutlineStructured(result) : toolName === "write" ? writeOutlineStructured(result, args) : toolName === "grep" ? grepOutlineStructured(result) : undefined;
 	if (!outline && carriesDiagnostics(result.details)) return undefined;
 	if (outline) {
@@ -1717,7 +1722,7 @@ function hydemodsResultComponent(toolName: string, result: { content: unknown; d
 	if (toolName === "bash" && !result.isError && resultText) {
 		const summary = testSummaryLine(sanitizeTerminalText(resultText), theme);
 		if (summary) return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName, result: summary, isError: false, cwd: process.cwd() } }, { expanded: options.expanded }, theme, takeover.display, { text: summary, format: "command" });
-		const source = bashSourceStructured(args, resultText, isTweakEnabled("ast-structuring"));
+		const source = bashSourceStructured(args, resultText, astOn);
 		if (source) return toolMessageRenderer({ customType: "integrated-tool-expansion", content: "", details: { toolName, result: source.text, isError: false, cwd: process.cwd() } }, { expanded: options.expanded }, theme, takeover.display, source);
 	}
 	if (!result.isError && nativeRendersJsonTree(toolName, args, resultText)) return undefined;
@@ -2210,7 +2215,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		repaintToolCards(ctx);
 		if (ctx.hasUI) ctx.ui.notify(`Tool rows: ${TOOL_ROWS_MODES.map((mode) => (mode === next ? `[${mode}]` : mode)).join(" · ")}`, "info");
 	};
-	pi.registerShortcut("ctrl+n", { description: "Cycle hydemods tool rows (cards → lines → group)", handler: cycleToolRows });
+	pi.registerShortcut("ctrl+n", { description: "Cycle hydemods tool rows (cards → ast → lines → group)", handler: cycleToolRows });
 
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
