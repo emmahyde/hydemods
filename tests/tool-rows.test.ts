@@ -89,6 +89,10 @@ test("a bash row is labelled by the program its command runs", () => {
 	expect(callLabel("xd__wiki_observe", {})).toBe("Observe");
 	expect(callLabel("context_notes", {})).toBe("Notes");
 	expect(callLabel("read", { path: "xd://wiki_status" })).toBe("Status");
+	expect(callLabel("wiki_observe", {})).toBe("Observe");
+	expect(callLabel("wiki_recall", {})).toBe("Recall");
+	expect(callLabel("generate_image", {})).toBe("Image");
+	expect(callLabel("write", { path: "xd://generate_image", content: "{}" })).toBe("Image");
 });
 
 test("small models' tool prefixes are stripped from titles", () => {

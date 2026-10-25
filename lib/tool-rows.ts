@@ -177,24 +177,24 @@ export function deviceName(name: string, args: unknown): string | undefined {
  return typeof path === "string" ? /^xd:\/\/([^/?#:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
 }
 
-/** A device's label, as a bash row names its program: an MCP device its server (`Linear`), a wiki device its action (`wiki_status` → `Status`), any other device its name. */
+/** Labels shorter than the tool name: `context_notes` → `Notes`. */
+const LabelFor: Record<string, string> = { context_notes: "Notes", generate_image: "Image" };
+
+/** A device or tool's label, as a bash row names its program: an MCP device its server (`Linear`), anything else its short label or its name without a `wiki_` prefix (`wiki_status` → `Status`). */
 function deviceLabel(device: string): string {
- if (!device.startsWith("mcp__")) return toolLabel(device.replace(/^wiki_(?=.)/, ""));
+ if (!device.startsWith("mcp__")) return LabelFor[device] ?? toolLabel(device.replace(/^wiki_(?=.)/, ""));
  const server = device.slice(5).split("_").find(Boolean);
  return server ? server[0]!.toUpperCase() + server.slice(1) : toolLabel(device);
 }
-
-/** Labels shorter than the tool name: `context_notes` → `Notes`. */
-const LabelFor: Record<string, string> = { context_notes: "Notes" };
 
 /** The row's label: a bash call shows the program it runs (`Git`, `Bun`), an `xd://` or MCP call its device (`Linear`), a skill read `Skill`, anything else its tool label. */
 export function callLabel(name: string, args: unknown): string {
  if (name === "read" && skillName(args)) return "Skill";
  const device = deviceName(name, args);
- if (device) return LabelFor[device] ?? deviceLabel(device);
+ if (device) return deviceLabel(device);
  const command = name === "bash" && args && typeof args === "object" ? (args as Record<string, unknown>).command : undefined;
  const program = typeof command === "string" ? commandName(command) : undefined;
- return program ? program[0]!.toUpperCase() + program.slice(1) : (LabelFor[name] ?? toolLabel(name));
+ return program ? program[0]!.toUpperCase() + program.slice(1) : deviceLabel(name);
 }
 
 /** A plain verb that keeps a title in the agent's voice after its tool verb is removed. */
