@@ -166,10 +166,12 @@ export function commandName(command: string): string | undefined {
 
 /**
  * The `xd://` device a read or write addresses (`xd://mcp__linear_get_issue` → `mcp__linear_get_issue`),
+ * the device a direct `xd__` call names (`xd__wiki_observe` → `wiki_observe`),
  * or the tool itself for a native MCP call; undefined for any other call.
  */
 export function deviceName(name: string, args: unknown): string | undefined {
  if (name.startsWith("mcp__")) return name;
+ if (name.startsWith("xd__")) return name.slice(4) || undefined;
  if (name !== "read" && name !== "write") return undefined;
  const path = args && typeof args === "object" ? (args as Record<string, unknown>).path : undefined;
  return typeof path === "string" ? /^xd:\/\/([^/?#:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
