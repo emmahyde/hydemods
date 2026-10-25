@@ -164,9 +164,29 @@ export function commandName(command: string): string | undefined {
  return name && /^[A-Za-z][\w.+-]*$/.test(name) ? name : undefined;
 }
 
-/** The row's label: a bash call shows the program it runs (`Git`, `Bun`), a skill read `Skill`, anything else its tool label. */
+/**
+ * The `xd://` device a read or write addresses (`xd://mcp__linear_get_issue` → `mcp__linear_get_issue`),
+ * or the tool itself for a native MCP call; undefined for any other call.
+ */
+export function deviceName(name: string, args: unknown): string | undefined {
+ if (name.startsWith("mcp__")) return name;
+ if (name !== "read" && name !== "write") return undefined;
+ const path = args && typeof args === "object" ? (args as Record<string, unknown>).path : undefined;
+ return typeof path === "string" ? /^xd:\/\/([^/?#:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
+}
+
+/** A device's label, as a bash row names its program: an MCP device its server (`Linear`), any other device its name (`Wiki Observe`). */
+function deviceLabel(device: string): string {
+ if (!device.startsWith("mcp__")) return toolLabel(device);
+ const server = device.slice(5).split("_").find(Boolean);
+ return server ? server[0]!.toUpperCase() + server.slice(1) : toolLabel(device);
+}
+
+/** The row's label: a bash call shows the program it runs (`Git`, `Bun`), an `xd://` or MCP call its device (`Linear`), a skill read `Skill`, anything else its tool label. */
 export function callLabel(name: string, args: unknown): string {
  if (name === "read" && skillName(args)) return "Skill";
+ const device = deviceName(name, args);
+ if (device) return deviceLabel(device);
  const command = name === "bash" && args && typeof args === "object" ? (args as Record<string, unknown>).command : undefined;
  const program = typeof command === "string" ? commandName(command) : undefined;
  return program ? program[0]!.toUpperCase() + program.slice(1) : toolLabel(name);

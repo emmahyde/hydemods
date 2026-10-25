@@ -605,3 +605,21 @@ test("a full replay in cards mode draws every call of a committed run, as a fres
 		uninstall();
 	}
 });
+
+test("xd:// and MCP calls are labelled by their device, as bash rows are by their program", () => {
+	const { uninstall, tool, view } = setup({ value: "lines" });
+	try {
+		tool("bash", { command: "git status", i: "Checking status" }, "a");
+		tool("write", { path: "xd://mcp__linear_get_issue", content: "{\"id\":\"X-1\"}", i: "Fetching the issue" }, "b");
+		tool("read", { path: "xd://mcp__dash_api_list_installed_docsets", i: "Reading the docs" }, "c");
+		tool("write", { path: "xd://wiki_observe", content: "{}", i: "Noting the decision" }, "d");
+		tool("mcp__blender_mcp_get_objects_summary", { i: "Listing objects" }, "e");
+		expect(view().map(row => row.replace(/\[[^\]]+\] /, ""))).toEqual([
+			"✔ Git           Checking status",
+			"✔ Linear        Fetching the issue",
+			"✔ Dash          Reading the docs",
+			"✔ Wiki Observe  Noting the decision",
+			"✔ Blender       Listing objects",
+		]);
+	} finally { uninstall(); }
+});
