@@ -85,7 +85,10 @@ test("a bash row is labelled by the program its command runs", () => {
 	expect(commandName("$(which git) status")).toBeUndefined();
 	expect(callLabel("bash", { command: "git pull\ngit log" })).toBe("Git");
 	expect(callLabel("bash", { command: "" })).toBe("Bash");
-	expect(callLabel("web_search", { query: "x" })).toBe("Web Search");
+	expect(callLabel("web_search", { query: "x" })).toBe("Web");
+	expect(callLabel("read", { path: "xd://skill_search" })).toBe("Search");
+	expect(callLabel("write", { path: "xd://ast_grep", content: "{}" })).toBe("AST");
+	expect(callLabel("read", { path: "xd://wiki_reindex_embeddings" })).toBe("Index");
 	expect(callLabel("xd__wiki_observe", {})).toBe("Observe");
 	expect(callLabel("context_notes", {})).toBe("Notes");
 	expect(callLabel("read", { path: "xd://wiki_status" })).toBe("Status");

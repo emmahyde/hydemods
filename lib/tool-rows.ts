@@ -178,7 +178,18 @@ export function deviceName(name: string, args: unknown): string | undefined {
 }
 
 /** Labels shorter than the tool name: `context_notes` → `Notes`. */
-const LabelFor: Record<string, string> = { context_notes: "Notes", generate_image: "Image" };
+const LabelFor: Record<string, string> = {
+ context_notes: "Notes",
+ generate_image: "Image",
+ ast_grep: "AST",
+ ast_edit: "AST",
+ call_model: "Model",
+ agent_model: "Model",
+ skill_load: "Load",
+ skill_search: "Search",
+ web_search: "Web",
+ wiki_reindex_embeddings: "Index",
+};
 
 /** A device or tool's label, as a bash row names its program: an MCP device its server (`Linear`), anything else its short label or its name without a `wiki_` prefix (`wiki_status` → `Status`). */
 function deviceLabel(device: string): string {
