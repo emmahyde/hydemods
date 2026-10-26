@@ -87,7 +87,7 @@ type StallMessageDetails = Pick<StallAlert, "agentName" | "kind" | "idleMinutes"
 // Subagents never outlive the OMP process, so transcripts untouched since load are dead, not stalled.
 const WATCH_STARTED_AT = Date.now();
 
-type TweakCategory = "Interface" | "Colors" | "Tools" | "Safeguards";
+type TweakCategory = "Interface" | "Widgets" | "Colors" | "Tools" | "Safeguards";
 
 type TweakDef = {
 	name: string;
@@ -155,10 +155,10 @@ const TWEAK_DEFS: TweakDef[] = [
 	},
 	{
 		name: "latest-thought-panel",
-		title: "Latest thought panel",
-		description: "Keeps thinking out of the transcript and shows only the newest thought block below the editor.",
-		category: "Interface",
-		render: () => `Hides transcript thinking and summarizes the newest thought in ${ThoughtPanelLines} fixed content lines plus a header. Ctrl+O shows the full original thought in the drawer until collapsed.`,
+		title: "Thinking widget",
+		description: "Keeps thinking out of the transcript and summarizes the newest thought below the prompt line.",
+		category: "Widgets",
+		render: () => `Shows ${ThoughtPanelLines} fixed summary lines plus a header below the prompt line. Ctrl+O temporarily shows the full original thought in this widget.`,
 	},
 	{
 		name: "session-title",
@@ -253,7 +253,7 @@ const pathResolver = createPathResolver(() => process.cwd());
 /** Path linker for transcript rows, or undefined while the tweak is off. */
 const pathLinksFor = () => (isTweakEnabled("path-links") ? pathResolver : undefined);
 
-const CATEGORIES: readonly TweakCategory[] = ["Interface", "Colors", "Tools", "Safeguards"];
+const CATEGORIES: readonly TweakCategory[] = ["Interface", "Widgets", "Colors", "Tools", "Safeguards"];
 
 type ThemeLike = {
 	fg: (color: ThemeColor, text: string) => string;
@@ -2379,10 +2379,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 					},
 				};
 			},
-			{ placement: "aboveEditor" },
+			{ placement: "belowEditor" },
 		);
-		// Widgets stack in insertion order; re-adding the drawer keeps the thought panel on top.
-		refreshLastPromptDrawer(ctx);
 	};
 
 	const noteThought = (message: { role?: unknown; content?: unknown }) => {
