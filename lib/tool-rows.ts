@@ -188,7 +188,13 @@ const LabelFor: Record<string, string> = {
  skill_load: "Load",
  skill_search: "Search",
  web_search: "Web",
- wiki_reindex_embeddings: "Index",
+ wiki_reindex_embeddings: "Reindex",
+ wiki_capture_source: "Capture",
+ wiki_ensure_page: "Page",
+ wiki_rebuild_meta: "Rebuild",
+ wiki_log_event: "Log",
+ recommend_tools: "Tools",
+ security_scan: "Scan",
 };
 
 /** A device or tool's label, as a bash row names its program: an MCP device its server (`Linear`), anything else its short label or its name without a `wiki_` prefix (`wiki_status` → `Status`). */

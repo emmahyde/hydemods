@@ -88,7 +88,8 @@ test("a bash row is labelled by the program its command runs", () => {
 	expect(callLabel("web_search", { query: "x" })).toBe("Web");
 	expect(callLabel("read", { path: "xd://skill_search" })).toBe("Search");
 	expect(callLabel("write", { path: "xd://ast_grep", content: "{}" })).toBe("AST");
-	expect(callLabel("read", { path: "xd://wiki_reindex_embeddings" })).toBe("Index");
+	expect(callLabel("read", { path: "xd://wiki_reindex_embeddings" })).toBe("Reindex");
+	expect(callLabel("read", { path: "xd://recommend_tools" })).toBe("Tools");
 	expect(callLabel("xd__wiki_observe", {})).toBe("Observe");
 	expect(callLabel("context_notes", {})).toBe("Notes");
 	expect(callLabel("read", { path: "xd://wiki_status" })).toBe("Status");
