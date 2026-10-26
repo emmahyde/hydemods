@@ -2096,6 +2096,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		requestRender: () => thoughtTui?.requestRender(),
 	});
 	const restoreToolDisplay = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
 		lastCtx = ctx;
 		ensureBackgrounds();
 		ensureLinkServer();
