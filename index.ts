@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { ThoughtPanelLines, thoughtPanelRows } from "./lib/thought-panel";
+import { createGilesWidget, GilesState, GilesStatusType } from "./lib/giles-widget";
+import { blocksText, gilesSource, gilesWrapContent } from "./lib/giles-output";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent, UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -40,7 +42,7 @@ import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOut
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
 import { EvalSummaryCache } from "./lib/eval-summary";
-import { RunSystemPrompt, TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
+import { RunSystemPrompt, setSkillNames, TOOL_ROWS_MODES, type Complete } from "./lib/tool-rows";
 import { ToolRows } from "./lib/tool-rows-host";
 import { WikiIndex } from "./lib/wiki-index";
 import { compactEvalResult, fitCollapseLine } from "./lib/eval-collapse";
@@ -2221,46 +2223,54 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// card now shows that content, so those messages render as nothing.
 	pi.registerMessageRenderer("integrated-tool-expansion", () => ({ render: () => [], invalidate() { } }));
 
-	// Keep the session notice unobtrusive; Ctrl+O still reveals its complete instructions.
-	pi.registerMessageRenderer("librarian-session-notice", (message, { expanded }, theme) => {
-		const content = typeof message.content === "string"
-			? message.content
-			: message.content.filter(block => block.type === "text").map(block => "text" in block ? block.text : "").join("\n");
-		const compact = content.replace(/\s+/g, " ").trim();
-		return {
-			render: (width: number) => expanded
-				? wrapTextWithAnsi(theme.fg("muted", content), Math.max(1, width))
-				: [theme.fg("muted", truncateToWidth(compact, Math.max(1, width), Ellipsis.Unicode))],
-			invalidate() { },
-		};
-	});
-
-	// Recall payloads are intentionally hidden in the transcript. Mirror the latest into
-	// UI chrome without changing model context or injecting duplicate messages.
-	let recalledText = "";
-	const refreshRecallWidget = (ctx: ExtensionContext, text: string) => {
-		recalledText = text;
+	// One Giles widget carries the startup notice, model, retrieval mode, action status and recall.
+	// Messages and live bus updates feed one state; the widget reads it, so nothing is shown twice.
+	const giles = new GilesState();
+	let gilesCtx: ExtensionContext | undefined;
+	const refreshGilesWidget = (ctx: ExtensionContext) => {
+		gilesCtx = ctx;
 		if (!ctx.hasUI) return;
-		if (!text) {
+		if (giles.empty) {
 			ctx.ui.setWidget("hydemods:recall", undefined);
 			return;
 		}
-		const titles = [...text.matchAll(/^(?:-|\d+\.) \*\*\[\[[^\]]+\]\]\*\* — \*[^*]+\* — (.+)$/gm)].map(match => match[1]!);
-		ctx.ui.setWidget("hydemods:recall", (_tui, theme) => {
-			const body = new Markdown(text, 0, 0, getMarkdownTheme());
-			return {
-				render: (width: number) => ctx.ui.getToolsExpanded()
-					? body.render(width)
-					: [theme.fg("muted", truncateToWidth(`🧠 Recalled ${titles.length} pages · Ctrl+O details · ${titles.join(" · ")}`, Math.max(1, width), Ellipsis.Unicode))],
-				invalidate: () => body.invalidate(),
-			};
-		}, { placement: "belowEditor" });
+		ctx.ui.setWidget("hydemods:recall", (_tui, theme) => createGilesWidget(giles, theme, () => ctx.ui.getToolsExpanded()), { placement: "belowEditor" });
 	};
+	// Fill from the persisted branch. A session switch starts from nothing; a fresh start keeps rows the
+	// adapter already published live this tick, because those are newer than anything persisted.
+	const restoreGilesState = (ctx: ExtensionContext, replace: boolean) => {
+		const persisted = new GilesState();
+		for (const entry of ctx.sessionManager.getBranch()) if (entry.type === "custom_message") persisted.applyMessage(entry.customType, entry.content);
+		if (replace) giles.reset();
+		giles.fillFrom(persisted);
+		refreshGilesWidget(ctx);
+	};
+	// The notice text lives in the widget; the transcript copy renders nothing while the widget holds it.
+	for (const type of ["giles-session-notice", "librarian-session-notice"]) pi.registerMessageRenderer(type, (message, _options, theme) => {
+		const source = gilesSource(blocksText(message.content));
+		return {
+			render: (width: number) => source === giles.notice ? [] : [theme.fg("muted", truncateToWidth(source.replace(/\s+/g, " ").trim(), Math.max(1, width), Ellipsis.Unicode))],
+			invalidate() { },
+		};
+	});
+	// The adapter asks before it drops its legacy footer rows: answering synchronously says this widget
+	// renders key/text rows, failures included. Unsubscribing at shutdown makes absence detectable.
+	const stopGilesProbe = pi.events.on("giles:status-probe", (probe) => {
+		if (gilesCtx?.hasUI === false || !probe || typeof probe !== "object") return;
+		Object.assign(probe, { accepts: true, failures: true });
+	});
+	pi.on("session_shutdown", () => stopGilesProbe());
+	pi.events.on("giles:status", (data) => {
+		if (giles.applyStatus(data) && gilesCtx) refreshGilesWidget(gilesCtx);
+	});
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role === "custom" && giles.applyMessage(message.customType, message.content)) refreshGilesWidget(ctx);
+	});
 	pi.on("context", (event, ctx) => {
-		const recall = event.messages.findLast(message => message.role === "custom" && (message.customType === "librarian-recall-context" || message.customType === "wiki-recall-context"));
-		if (recall?.role !== "custom") return;
-		const text = typeof recall.content === "string" ? recall.content : recall.content.filter(block => block.type === "text").map(block => "text" in block ? block.text : "").join("\n");
-		if (text !== recalledText) refreshRecallWidget(ctx, text);
+		let changed = false;
+		for (const message of event.messages) if (message.role === "custom" && giles.applyMessage(message.customType, message.content)) changed = true;
+		if (changed || !gilesCtx) refreshGilesWidget(ctx);
 	});
 
 	/* ------------------------- TOON for the model ------------------------- */
@@ -2271,9 +2281,20 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const TOON_CACHE_LIMIT = 2000;
 
 	pi.on("context", (event) => {
-		if (!isTweakEnabled("tool-results-toon")) return;
+		const convertToolResults = isTweakEnabled("tool-results-toon");
 		let changed = false;
-		const messages = event.messages.map((message) => {
+		// Status updates exist for the widget; they never reach the model. Everything else Giles sends
+		// is wrapped block by block, so existing envelopes, image blocks and source strings pass untouched.
+		const messages = event.messages.filter(message => !(message.role === "custom" && GilesStatusType.test(message.customType))).map((message) => {
+			if (message.role === "custom" && /^(?:giles|librarian|wiki)-(?:recall-context|session-notice|observe-reminder|action-report)$/.test(message.customType)) {
+				changed = true;
+				return { ...message, content: gilesWrapContent(message.customType.replace(/^(?:giles|librarian|wiki)-/, ""), message.content) };
+			}
+			if (message.role === "toolResult" && ["giles", "librarian"].includes(message.toolName)) {
+				changed = true;
+				return { ...message, content: gilesWrapContent(message.isError ? "error" : "result", message.content) };
+			}
+			if (!convertToolResults) return message;
 			if (message.role !== "toolResult" || message.isError) return message;
 			const source = toolResultText(message.content);
 			if (source === undefined) return message;
@@ -2288,7 +2309,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			const images = message.content.filter((block) => block.type !== "text");
 			return { ...message, content: [{ type: "text" as const, text: cached.toon }, ...images] };
 		});
-		return changed ? { messages } : undefined;
+		return changed || messages.length !== event.messages.length ? { messages } : undefined;
 	});
 
 	/* --------------------------- Session Identity --------------------------- */
@@ -2984,6 +3005,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			check();
 		}
 		installDrawers(ctx);
+		setSkillNames(pi.getCommands().filter(command => command.source === "skill").map(command => command.name));
 		syncGatedTools();
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
@@ -2991,8 +3013,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		thoughtStale = true;
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
-		const recall = ctx.sessionManager.getBranch().findLast(entry => entry.type === "custom_message" && (entry.customType === "librarian-recall-context" || entry.customType === "wiki-recall-context"));
-		refreshRecallWidget(ctx, recall?.type === "custom_message" && typeof recall.content === "string" ? recall.content : "");
+		restoreGilesState(ctx, (_event as { type?: string } | undefined)?.type !== "session_start");
 		void pinHostTitle(ctx);
 		syncPaneTitle(ctx);
 	};

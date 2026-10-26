@@ -177,41 +177,65 @@ export function deviceName(name: string, args: unknown): string | undefined {
  return typeof path === "string" ? /^xd:\/\/([^/?#:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
 }
 
-/** Labels shorter than the tool name: `context_notes` → `Notes`. */
+/** Canonical labels retain domains; glyph substitution happens only at render time. */
 const LabelFor: Record<string, string> = {
- context_notes: "Notes",
- generate_image: "Image",
- ast_grep: "AST",
- ast_edit: "AST",
- call_model: "Model",
- agent_model: "Model",
- skill_load: "Load",
- skill_search: "Search",
- web_search: "Web",
- wiki_reindex_embeddings: "Reindex",
- wiki_capture_source: "Capture",
- wiki_ensure_page: "Page",
- wiki_rebuild_meta: "Rebuild",
- wiki_log_event: "Log",
- recommend_tools: "Tools",
- security_scan: "Scan",
+ context_notes: "CONTEXT:NOTES",
+ generate_image: "IMAGE:CREATE",
+ ast_grep: "AST:SEARCH",
+ ast_edit: "AST:EDIT",
+ call_model: "MODEL:CALL",
+ agent_model: "MODEL:SET",
+ skill_load: "SKILL:LOAD",
+ skill_search: "SKILL:SEARCH",
+ web_search: "WEB:SEARCH",
+ recommend_tools: "TOOL:SEARCH",
+ security_scan: "SECURITY:SCAN",
+ giles_feedback: "GILES:FB",
+ librarian_feedback: "GILES:FB",
+ giles_feedback_check: "GILES:FB_CHECK",
+ librarian_feedback_check: "GILES:FB_CHECK",
 };
 
-/** A device or tool's label, as a bash row names its program: an MCP device its server (`Linear`), anything else its short label or its name without a `wiki_` prefix (`wiki_status` → `Status`). */
-function deviceLabel(device: string): string {
- if (!device.startsWith("mcp__")) return LabelFor[device] ?? toolLabel(device.replace(/^wiki_(?=.)/, ""));
- const server = device.slice(5).split("_").find(Boolean);
- return server ? server[0]!.toUpperCase() + server.slice(1) : toolLabel(device);
+function operationArgs(args: unknown): Record<string, unknown> | undefined {
+ if (!args || typeof args !== "object") return undefined;
+ const record = args as Record<string, unknown>;
+ if (typeof record.content !== "string") return record;
+ try {
+  const parsed: unknown = JSON.parse(record.content);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : record;
+ } catch { return record; }
 }
 
-/** The row's label: a bash call shows the program it runs (`Git`, `Bun`), an `xd://` or MCP call its device (`Linear`), a skill read `Skill`, anything else its tool label. */
+function deviceLabel(device: string, args: unknown): string {
+ if (device === "giles" || device === "librarian") {
+  const action = operationArgs(args)?.action;
+  if (typeof action !== "string" || !/^[a-z][a-z0-9_]*$/i.test(action)) return "GILES";
+  return `GILES:${action === "feedback_submit" ? "FB" : action.toUpperCase()}`;
+ }
+ if (LabelFor[device]) return LabelFor[device]!;
+ if (device.startsWith("wiki_")) return `GILES:${device.slice(5).toUpperCase()}`;
+ if (device.startsWith("mcp__")) {
+  const bare = device.slice(5);
+  const boundary = bare.indexOf("_");
+  return boundary > 0 ? `${bare.slice(0, boundary)}:${bare.slice(boundary + 1)}`.toUpperCase() : bare.toUpperCase();
+ }
+ return toolLabel(device);
+}
+
+/** Skill labels keep a unique full identity; the renderer abbreviates them without merging calls. */
 export function callLabel(name: string, args: unknown): string {
- if (name === "read" && skillName(args)) return "Skill";
+ const skill = name === "read" ? skillName(args) : undefined;
+ if (skill) return `/${skill}`;
  const device = deviceName(name, args);
- if (device) return deviceLabel(device);
+ if (device) return deviceLabel(device, args);
+ if (name === "eval" && args && typeof args === "object") {
+  const language = (args as Record<string, unknown>).language;
+  if (language === "py") return "PYTHON3";
+  if (language === "js") return "JS";
+ }
  const command = name === "bash" && args && typeof args === "object" ? (args as Record<string, unknown>).command : undefined;
  const program = typeof command === "string" ? commandName(command) : undefined;
- return program ? program[0]!.toUpperCase() + program.slice(1) : deviceLabel(name);
+ return program ? program[0]!.toUpperCase() + program.slice(1) : deviceLabel(name, args);
 }
 
 /** A plain verb that keeps a title in the agent's voice after its tool verb is removed. */
@@ -263,10 +287,61 @@ function bareFile(path: string): string {
  return path.length > clean.length ? `${base}/` : base;
 }
 
-/** The skill a `skill://name/…` read loads, or undefined for any other path. */
+let knownSkills = new Set<string>();
+const skillLabels = new Map<string, string>();
+/** Every label the registry hands out, so a skill it does not list never borrows one of them. */
+let takenSkillLabels = new Set<string>();
+const initials = (name: string) => name.split(/[-_:~/]+/).filter(Boolean).map(word => word[0]!.toUpperCase()).join("");
+
+/**
+ * Use the host's discovered names so a skill resource is not mistaken for another skill. Display labels
+ * are acronyms of the skill's own name; a collision falls back to the namespaced acronym, then to the
+ * full identity, so two skills never share a label and none is chosen silently.
+ */
+export function setSkillNames(names: readonly string[]): void {
+ knownSkills = new Set(names.map(name => name.replace(/^skill:/, "")));
+ skillLabels.clear();
+ const base = new Map<string, string>();
+ const counts = new Map<string, number>();
+ for (const name of knownSkills) {
+  const acronym = initials(name.slice(name.lastIndexOf("/") + 1));
+  base.set(name, acronym);
+  counts.set(acronym, (counts.get(acronym) ?? 0) + 1);
+ }
+ const qualified = new Map<string, string>();
+ const qualifiedCounts = new Map<string, number>();
+ for (const [name, acronym] of base) {
+  const label = counts.get(acronym) === 1 ? acronym : initials(name);
+  qualified.set(name, label);
+  qualifiedCounts.set(label, (qualifiedCounts.get(label) ?? 0) + 1);
+ }
+ for (const [name, label] of qualified) skillLabels.set(name, qualifiedCounts.get(label) === 1 ? `/${label}` : `/${name}`);
+ takenSkillLabels = new Set(skillLabels.values());
+}
+
+/** The display label for a skill identity (`/MNP`); never an executable command. An unregistered identity keeps its full name when its acronym is taken. */
+export function skillCallLabel(identity: string): string {
+ const registered = skillLabels.get(identity);
+ if (registered) return registered;
+ const label = `/${initials(identity.slice(identity.lastIndexOf("/") + 1))}`;
+ return takenSkillLabels.has(label) ? `/${identity}` : label;
+}
+
+/**
+ * The registered skill a `skill://` path names: the longest registered namespace/name prefix, with the
+ * rest of the path a resource inside it. A skill the registry does not list is its first path segment.
+ */
 function skillName(args: unknown): string | undefined {
  const path = args && typeof args === "object" ? (args as Record<string, unknown>).path : undefined;
- return typeof path === "string" ? /^skill:\/\/([^/:\s]+)/.exec(stripControls(path).trim())?.[1] : undefined;
+ if (typeof path !== "string") return undefined;
+ const match = /^skill:\/\/([^\s?#]+)/.exec(stripControls(path).trim());
+ if (!match) return undefined;
+ const parts = match[1]!.replace(/:(?:raw|img|\d[\d,+-]*|-\d+)(?::.*)?$/, "").split("/");
+ for (let end = parts.length; end > 0; end--) {
+  const identity = parts.slice(0, end).join("/");
+  if (knownSkills.has(identity)) return identity;
+ }
+ return parts[0] || undefined;
 }
 
 /**
@@ -416,13 +491,14 @@ export function cleanLines(text: string, max: number, length = MaxLineLength): s
  */
 export function toolBullets(text: string, labels: readonly string[], length = MaxFullLineLength): string | undefined {
  if (text.length > 2_000) return undefined;
- const byLower = new Map(labels.map(label => [label.toLowerCase(), label]));
+ const ordered = [...labels].sort((a, b) => b.length - a.length);
  const found = new Map<string, string>();
  for (const raw of stripControls(text).split(/\r?\n/)) {
-  const match = /^\s*(?:[-*•]\s+|\d+[.)]\s+)?[`*_]*([A-Za-z][\w .+-]{0,30}?)[`*_]*\s*:\s*(.+)$/.exec(raw);
-  const label = match ? byLower.get(match[1]!.trim().toLowerCase()) : undefined;
+  const entry = raw.trim().replace(/^(?:[-*•]\s+|\d+[.)]\s+)/, "").replace(/^[`*_]+/, "");
+  const lower = entry.toLowerCase();
+  const label = ordered.find(candidate => lower.startsWith(candidate.toLowerCase()) && /^[`*_]*\s*:/.test(entry.slice(candidate.length)));
   if (!label || found.has(label)) continue;
-  const line = cleanLine(match![2]!, length);
+  const line = cleanLine(entry.slice(label.length).replace(/^[`*_]*\s*:\s*/, ""), length);
   if (line) found.set(label, line);
  }
  const lines = labels.filter(label => found.has(label)).map(label => `${label}: ${found.get(label)}`);

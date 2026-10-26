@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { summarizeCode } from "@oh-my-pi/pi-natives";
+import { ensureGrammar } from "@oh-my-pi/pi-coding-agent/utils/grammars";
 import { flattenDeclarations, outlineSource, type Summarize } from "../lib/code-outline";
+
+// Ruby is an on-demand wasm grammar (not linked into the natives addon since OMP 18.8.7); the
+// synchronous `summarizeCode` reports `parsed: false` until it is installed. The host's read tool
+// installs it on first use, so a fresh test process must do the same. Idempotent, no network once cached.
+await ensureGrammar({ lang: "ruby" });
 
 // A summarizer that elides line 2 of a three-line block, as the host does for a body.
 const elideSecondLine: Summarize = ({ code }) => ({

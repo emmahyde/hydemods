@@ -36,6 +36,7 @@ import {
 	withoutLabel,
 } from "./tool-rows";
 import { taskCardBody, type TaskDetails } from "./task-card";
+import { displayToolLabel } from "./tool-glyphs";
 import { createPathResolver } from "./path-links";
 
 /*
@@ -754,7 +755,7 @@ export class ToolRows {
 			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));
 		}
 		const titles = calls.map(call => this.title(call));
-		const labelWidth = Math.max(...calls.map(call => callLabel(call.name ?? "tool", call.args).length));
+		const labelWidth = Math.max(...calls.map(call => visibleWidth(displayToolLabel(callLabel(call.name ?? "tool", call.args), theme.getSymbolPreset() === "ascii"))));
 		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
 		const known = (subject: string) => visibleWidth(subject) + (this.host.knows?.(subject) ? visibleWidth(WikiBadge) + 1 : 0);
@@ -823,10 +824,10 @@ export class ToolRows {
 		const name = call.name ?? "";
 		const fixed = deviceName(name, call.args) ? undefined : ToolColor[name];
 		const color = call.result?.isError ? "error" : (fixed ?? letterColor(label));
-		// Text labels are upper case and left-aligned; padding to the batch's widest label starts every title in the same column.
-		if (!this.host.pills?.()) return theme.fg(color, theme.bold(label.toUpperCase())) + " ".repeat(Math.max(0, width - label.length));
-		// Pills in one batch share a width: the fill runs to the widest label.
-		return pill(theme, color, label.toUpperCase().padEnd(width));
+		const shown = displayToolLabel(label, theme.getSymbolPreset() === "ascii");
+		const padded = shown + " ".repeat(Math.max(0, width - visibleWidth(shown)));
+		if (!this.host.pills?.()) return theme.fg(color, theme.bold(padded));
+		return pill(theme, color, padded);
 	}
 
 	/** `file.ts` in the theme's path colour, its `:40-80` selector dimmed; a subject the wiki knows leads with a badge. */
@@ -886,9 +887,15 @@ export class ToolRows {
 			const label = callLabel(call.name ?? "tool", call.args);
 			byLabel.set(label, [...(byLabel.get(label) ?? []), call]);
 		}
-		const items = new Map((summary ?? "").split("\n").filter(Boolean).map(line => [line.slice(0, line.indexOf(": ")), line.slice(line.indexOf(": ") + 2)] as const));
+		// A summary line is `<canonical label>: text`; the longest burst label that prefixes it names the item, since labels hold colons themselves.
+		const known = [...byLabel.keys()].sort((a, b) => b.length - a.length);
+		const items = new Map<string, string>();
+		for (const line of (summary ?? "").split("\n")) {
+			const label = known.find(candidate => line.startsWith(`${candidate}: `));
+			if (label && !items.has(label)) items.set(label, line.slice(label.length + 2));
+		}
 		const bullet = theme.fg("dim", "•");
-		const labelWidth = Math.max(0, ...[...byLabel.keys()].map(label => label.length));
+		const labelWidth = Math.max(0, ...[...byLabel.keys()].map(label => visibleWidth(displayToolLabel(label, theme.getSymbolPreset() === "ascii"))));
 		const indent = "    ";
 		const rows = [`${glyph} ${count}${failures}`];
 		for (const [label, group] of byLabel) {
