@@ -1,61 +1,34 @@
-import { afterEach, expect, test, vi } from "bun:test";
-import { ThoughtSummary, thoughtPanelRows } from "../lib/thought-panel";
+import { expect, test } from "bun:test";
+import { thoughtPanelRows } from "../lib/thought-panel";
 
 const plain = { header: (text: string) => text, line: (text: string) => text };
-afterEach(() => vi.useRealTimers());
 
-test("collapsed drawer reserves three content rows and shows the summary, not raw thinking", () => {
- for (const text of ["", "short", "raw thought\n".repeat(30)]) {
-  const rows = thoughtPanelRows(text, false, 40, plain, false, "The decision is to preserve height.");
-  expect(rows).toHaveLength(4);
-  expect(rows.slice(1)).toEqual(["  The decision is to preserve height.", "", ""]);
- }
+test("collapsed thinking shows its first and last sentences, omitting the middle", () => {
+ const rows = thoughtPanelRows("Inspect the input. Discard this middle detail. Keep the result.", false, 80, plain);
+ expect(rows.slice(1)).toEqual(["  Inspect the input. ... Keep the result.", "", ""]);
 });
 
-test("expansion reveals every original line and collapse restores the summary", () => {
- const raw = Array.from({ length: 30 }, (_, n) => `step ${n}`).join("\n");
- const expanded = thoughtPanelRows(raw, false, 40, plain, true, "Brief summary");
- expect(expanded.slice(1)).toEqual(raw.split("\n").map(line => `  ${line}`));
- expect(thoughtPanelRows(raw, false, 40, plain, false, "Brief summary").slice(1)).toEqual(["  Brief summary", "", ""]);
+test("a single sentence is not duplicated and an unfinished streaming tail is kept", () => {
+ expect(thoughtPanelRows("One sentence.", false, 80, plain).slice(1)).toEqual(["  One sentence.", "", ""]);
+ expect(thoughtPanelRows("First sentence. Middle sentence. Still deciding", false, 80, plain).slice(1)).toEqual(["  First sentence. ... Still deciding", "", ""]);
 });
 
-test("narrow panes keep summary and header inside the width budget", () => {
- const rows = thoughtPanelRows("raw", true, 12, plain, false, "A long summary that must wrap across many rows without growing the drawer");
+test("overflow ends with three dots and stays within three content lines", () => {
+ const rows = thoughtPanelRows("First sentence. Middle. " + "Long final sentence ".repeat(30), false, 30, plain);
  expect(rows).toHaveLength(4);
- expect(rows.every(row => Bun.stringWidth(row) <= 12)).toBe(true);
+ expect(rows[3]!.endsWith("...")).toBe(true);
+ expect(rows.every(row => Bun.stringWidth(row) <= 30)).toBe(true);
 });
 
-test("a previous session's delayed summary cannot replace the current thought", async () => {
- vi.useFakeTimers();
- const { promise, resolve: finish } = Promise.withResolvers<string>();
- const summary = new ThoughtSummary(async () => promise, () => {});
- summary.update("old thought");
- vi.advanceTimersByTime(800);
- summary.clear();
- finish("obsolete summary");
- await Promise.resolve();
- expect(summary.summary).toBe("");
- summary.clear();
+test("expansion preserves original thinking and collapse restores the excerpt", () => {
+ const raw = "First sentence.\nHidden middle sentence.\nLast sentence.";
+ expect(thoughtPanelRows(raw, false, 80, plain, true).slice(1)).toEqual(raw.split("\n").map(line => `  ${line}`));
+ expect(thoughtPanelRows(raw, false, 80, plain).slice(1)).toEqual(["  First sentence. ... Last sentence.", "", ""]);
 });
 
-test("streamed updates coalesce and refresh to the newest thought after an active request", async () => {
- vi.useFakeTimers();
- const first = Promise.withResolvers<string>();
- const snapshots: string[] = [];
- const summary = new ThoughtSummary(async (_system, prompt) => {
-  snapshots.push(JSON.parse(prompt).thought);
-  return snapshots.length === 1 ? first.promise : "The latest decision";
- }, () => {});
- summary.update("A");
- vi.advanceTimersByTime(800);
- summary.update("AB");
- summary.update("ABC");
- expect(snapshots).toEqual(["A"]);
- first.resolve("An earlier decision");
- for (let i = 0; i < 6; i++) await Promise.resolve();
- vi.advanceTimersByTime(800);
- for (let i = 0; i < 6; i++) await Promise.resolve();
- expect(snapshots).toEqual(["A", "ABC"]);
- expect(summary.summary).toBe("The latest decision");
- summary.clear();
+test("empty thoughts preserve the fixed height and narrow panes do not overflow", () => {
+ expect(thoughtPanelRows("", false, 40, plain)).toEqual(["✻ no thought yet", "", "", ""]);
+ for (const width of [1, 2, 3, 4, 8]) {
+  expect(thoughtPanelRows("First sentence. More detail. Last sentence.", true, width, plain).every(row => Bun.stringWidth(row) <= width)).toBe(true);
+ }
 });
