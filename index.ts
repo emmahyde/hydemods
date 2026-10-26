@@ -149,7 +149,7 @@ const TWEAK_DEFS: TweakDef[] = [
 	{
 		name: "last-prompt-drawer",
 		title: "Last prompt widget",
-		description: "Shows a caret-prefixed preview of your latest prompt below the editor, after the thinking widget.",
+		description: "Shows a caret-prefixed preview of your latest prompt below the editor, before the thinking widget.",
 		category: "Widgets",
 		render: () => "Automatic; no controls. Keeps the ❯ caret and truncates the preview to the terminal width.",
 	},
@@ -2280,6 +2280,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			}),
 			{ placement: "belowEditor" },
 		);
+		// Reinsert thinking last so updating the prompt never reverses their order.
+		refreshThoughtPanel(ctx);
 	};
 
 	const latestUserPrompt = (ctx: ExtensionContext): string => {
@@ -2381,8 +2383,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 			},
 			{ placement: "belowEditor" },
 		);
-		// Below-editor widgets stack in insertion order: italic thoughts, then the caret preview.
-		refreshLastPromptDrawer(ctx);
 	};
 
 	const noteThought = (message: { role?: unknown; content?: unknown }) => {
