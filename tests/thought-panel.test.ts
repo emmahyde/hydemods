@@ -1,34 +1,61 @@
-import { expect, test } from "bun:test";
-import { ThoughtPanelLines, thoughtPanelRows } from "../lib/thought-panel";
+import { afterEach, expect, test, vi } from "bun:test";
+import { ThoughtSummary, thoughtPanelRows } from "../lib/thought-panel";
 
 const plain = { header: (text: string) => text, line: (text: string) => text };
-const rows = (text: string, stale = false, width = 40) => thoughtPanelRows(text, stale, width, plain);
+afterEach(() => vi.useRealTimers());
 
-test("the panel keeps one height for no thought, a short thought, and a long one", () => {
- const long = Array.from({ length: 30 }, (_, n) => `step ${n}`).join("\n");
- for (const text of ["", "one line", long]) expect(rows(text)).toHaveLength(ThoughtPanelLines + 1);
+test("collapsed drawer reserves three content rows and shows the summary, not raw thinking", () => {
+ for (const text of ["", "short", "raw thought\n".repeat(30)]) {
+  const rows = thoughtPanelRows(text, false, 40, plain, false, "The decision is to preserve height.");
+  expect(rows).toHaveLength(4);
+  expect(rows.slice(1)).toEqual(["  The decision is to preserve height.", "", ""]);
+ }
 });
 
-test("a long thought rolls: the window shows its last lines and counts the rest", () => {
- const long = Array.from({ length: 30 }, (_, n) => `step ${n}`).join("\n");
- const shown = rows(long);
- expect(shown[0]).toBe("✻ thinking · 22 earlier lines");
- expect(shown.at(-1)).toBe("  step 29");
- expect(shown[1]).toBe("  step 22");
+test("expansion reveals every original line and collapse restores the summary", () => {
+ const raw = Array.from({ length: 30 }, (_, n) => `step ${n}`).join("\n");
+ const expanded = thoughtPanelRows(raw, false, 40, plain, true, "Brief summary");
+ expect(expanded.slice(1)).toEqual(raw.split("\n").map(line => `  ${line}`));
+ expect(thoughtPanelRows(raw, false, 40, plain, false, "Brief summary").slice(1)).toEqual(["  Brief summary", "", ""]);
 });
 
-test("a short thought sits at the top and blank rows fill the rest", () => {
- expect(rows("first\nsecond")).toEqual(["✻ thinking", "  first", "  second", ...Array(ThoughtPanelLines - 2).fill("")]);
+test("narrow panes keep summary and header inside the width budget", () => {
+ const rows = thoughtPanelRows("raw", true, 12, plain, false, "A long summary that must wrap across many rows without growing the drawer");
+ expect(rows).toHaveLength(4);
+ expect(rows.every(row => Bun.stringWidth(row) <= 12)).toBe(true);
 });
 
-test("the header says when the thought is from the last turn or missing", () => {
- expect(rows("old idea", true)[0]).toBe("✻ last thought");
- expect(rows("", true)[0]).toBe("✻ no thought yet");
+test("a previous session's delayed summary cannot replace the current thought", async () => {
+ vi.useFakeTimers();
+ const { promise, resolve: finish } = Promise.withResolvers<string>();
+ const summary = new ThoughtSummary(async () => promise, () => {});
+ summary.update("old thought");
+ vi.advanceTimersByTime(800);
+ summary.clear();
+ finish("obsolete summary");
+ await Promise.resolve();
+ expect(summary.summary).toBe("");
+ summary.clear();
 });
 
-test("wrapped lines count against the window, so a narrow pane keeps the same height", () => {
- const wide = "word ".repeat(60).trim();
- const shown = rows(wide, false, 20);
- expect(shown).toHaveLength(ThoughtPanelLines + 1);
- expect(shown[0]).toMatch(/earlier lines$/);
+test("streamed updates coalesce and refresh to the newest thought after an active request", async () => {
+ vi.useFakeTimers();
+ const first = Promise.withResolvers<string>();
+ const snapshots: string[] = [];
+ const summary = new ThoughtSummary(async (_system, prompt) => {
+  snapshots.push(JSON.parse(prompt).thought);
+  return snapshots.length === 1 ? first.promise : "The latest decision";
+ }, () => {});
+ summary.update("A");
+ vi.advanceTimersByTime(800);
+ summary.update("AB");
+ summary.update("ABC");
+ expect(snapshots).toEqual(["A"]);
+ first.resolve("An earlier decision");
+ for (let i = 0; i < 6; i++) await Promise.resolve();
+ vi.advanceTimersByTime(800);
+ for (let i = 0; i < 6; i++) await Promise.resolve();
+ expect(snapshots).toEqual(["A", "ABC"]);
+ expect(summary.summary).toBe("The latest decision");
+ summary.clear();
 });

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { ThoughtPanelLines, thoughtPanelRows } from "./lib/thought-panel";
+import { ThoughtPanelLines, ThoughtSummary, ThoughtSummaryPrompt, thoughtPanelRows } from "./lib/thought-panel";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent, UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -158,7 +158,7 @@ const TWEAK_DEFS: TweakDef[] = [
 		title: "Latest thought panel",
 		description: "Keeps thinking out of the transcript and shows only the newest thought block below the editor.",
 		category: "Interface",
-		render: () => `Turns on OMP's Hide Thinking Blocks for the session (not saved) and tails the newest thought in a fixed ${ThoughtPanelLines}-line window, so the chrome keeps one height.`,
+		render: () => `Hides transcript thinking and summarizes the newest thought in ${ThoughtPanelLines} fixed content lines plus a header. Ctrl+O shows the full original thought in the drawer until collapsed.`,
 	},
 	{
 		name: "session-title",
@@ -2145,7 +2145,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		const model = lastCtx?.modelRegistry.find("local", readSetting(toolRowsModelSetting).trim());
 		if (!model) return undefined;
 		// A run summary has one line per distinct tool; a call line is one phrase.
-		const maxTokens = system === RunSystemPrompt ? 240 : 40;
+		const maxTokens = system === RunSystemPrompt ? 240 : system === ThoughtSummaryPrompt ? 160 : 40;
 		const response = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { signal, maxTokens });
 		if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
 		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
@@ -2303,12 +2303,12 @@ export default function hydemods(pi: ExtensionAPI): void {
 
 	/* ---------------------------- Latest thought ---------------------------- */
 
-	// OMP's own thinking blocks stay hidden (hideThinkingBlock) while this is on; the panel shows only
-	// the newest thought block in a fixed-height rolling window. A new turn keeps the last thought,
-	// marked stale, until it thinks: clearing it would collapse the panel and jump the editor.
+	// Thinking stays out of the transcript. The drawer reserves three summary rows;
+	// Ctrl+O temporarily replaces the summary with the full original thought.
 	let latestThought = "";
 	let thoughtStale = false;
 	let thoughtTui: { requestRender(): void } | undefined;
+	const thoughtSummary = new ThoughtSummary(localLine, () => thoughtTui?.requestRender());
 
 	type ThinkingBlock = { type: "thinking"; thinking: string };
 	const isThinkingBlock = (block: unknown): block is ThinkingBlock =>
@@ -2363,12 +2363,14 @@ export default function hydemods(pi: ExtensionAPI): void {
 			"hydemods:latest-thought",
 			(tui, theme) => {
 				thoughtTui = tui;
-				let cache: { text: string; stale: boolean; width: number; lines: string[] } | undefined;
+				let cache: { text: string; summary: string; expanded: boolean; stale: boolean; width: number; lines: string[] } | undefined;
 				const style = { header: (text: string) => theme.fg("muted", text), line: (text: string) => theme.italic(theme.fg("thinkingText", text)) };
 				return {
 					render(width: number): readonly string[] {
-						if (cache?.text !== latestThought || cache.stale !== thoughtStale || cache.width !== width) {
-							cache = { text: latestThought, stale: thoughtStale, width, lines: thoughtPanelRows(latestThought, thoughtStale, width, style) };
+						const expanded = ctx.ui.getToolsExpanded();
+						const summary = thoughtSummary.summary;
+						if (cache?.text !== latestThought || cache.summary !== summary || cache.expanded !== expanded || cache.stale !== thoughtStale || cache.width !== width) {
+							cache = { text: latestThought, summary, expanded, stale: thoughtStale, width, lines: thoughtPanelRows(latestThought, thoughtStale, width, style, expanded, summary) };
 						}
 						return cache.lines;
 					},
@@ -2388,6 +2390,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		const text = lastThinkingText(message);
 		if (!text || (text === latestThought && !thoughtStale)) return;
 		latestThought = text;
+		thoughtSummary.update(text);
 		thoughtStale = false;
 		thoughtTui?.requestRender();
 	};
@@ -2946,6 +2949,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 		restoreToolDisplay(ctx);
 		lastPrompt = latestUserPrompt(ctx);
 		latestThought = latestSessionThought(ctx);
+		thoughtSummary.clear();
+		thoughtSummary.update(latestThought);
 		thoughtStale = true;
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
@@ -2958,7 +2963,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("session_tree", onSession);
 	// Emitted when the session is disposed (exit, Ctrl+C/D, signals), which also cancels its async
 	// jobs; cancelling here aborts the loop and its shell check before the manager drains.
-	pi.on("session_shutdown", () => { monitors.cancelAll(); evalSummaries.clear(); lastCtx = undefined; });
+	pi.on("session_shutdown", () => { monitors.cancelAll(); evalSummaries.clear(); thoughtSummary.clear(); lastCtx = undefined; });
 
 	// `/recommend-tools` anywhere in a prompt: strip it on submit (input handlers run before slash
 	// commands dispatch), then attach the judge's picks for that prompt before its turn. Marked
