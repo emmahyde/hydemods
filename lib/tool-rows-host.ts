@@ -36,7 +36,7 @@ import {
 	withoutLabel,
 } from "./tool-rows";
 import { taskCardBody, type TaskDetails } from "./task-card";
-import { displayToolLabel } from "./tool-glyphs";
+import { displayToolLabel } from "./tool-labels";
 import { createPathResolver } from "./path-links";
 
 /*
@@ -755,7 +755,7 @@ export class ToolRows {
 			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));
 		}
 		const titles = calls.map(call => this.title(call));
-		const labelWidth = Math.max(...calls.map(call => visibleWidth(displayToolLabel(callLabel(call.name ?? "tool", call.args), theme.getSymbolPreset() === "ascii"))));
+		const labelWidth = Math.max(...calls.map(call => visibleWidth(displayToolLabel(callLabel(call.name ?? "tool", call.args)))));
 		const titleWidth = Math.max(0, ...titles.map(title => visibleWidth(title.text)));
 		const subjects = calls.map(call => callSubject(call.name ?? "", call.args));
 		const known = (subject: string) => visibleWidth(subject) + (this.host.knows?.(subject) ? visibleWidth(WikiBadge) + 1 : 0);
@@ -824,7 +824,7 @@ export class ToolRows {
 		const name = call.name ?? "";
 		const fixed = deviceName(name, call.args) ? undefined : ToolColor[name];
 		const color = call.result?.isError ? "error" : (fixed ?? letterColor(label));
-		const shown = displayToolLabel(label, theme.getSymbolPreset() === "ascii");
+		const shown = displayToolLabel(label);
 		const padded = shown + " ".repeat(Math.max(0, width - visibleWidth(shown)));
 		if (!this.host.pills?.()) return theme.fg(color, theme.bold(padded));
 		return pill(theme, color, padded);
@@ -895,7 +895,7 @@ export class ToolRows {
 			if (label && !items.has(label)) items.set(label, line.slice(label.length + 2));
 		}
 		const bullet = theme.fg("dim", "•");
-		const labelWidth = Math.max(0, ...[...byLabel.keys()].map(label => visibleWidth(displayToolLabel(label, theme.getSymbolPreset() === "ascii"))));
+		const labelWidth = Math.max(0, ...[...byLabel.keys()].map(label => visibleWidth(displayToolLabel(label))));
 		const indent = "    ";
 		const rows = [`${glyph} ${count}${failures}`];
 		for (const [label, group] of byLabel) {

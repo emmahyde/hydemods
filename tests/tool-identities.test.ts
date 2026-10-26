@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { displayToolLabel, ToolGlyphs } from '../lib/tool-glyphs';
+import { displayToolLabel } from '../lib/tool-labels';
 import { callLabel, callSubject, setSkillNames, toolBullets } from '../lib/tool-rows';
 
 afterEach(() => setSkillNames([]));
@@ -32,17 +32,14 @@ test('direct, device and historical forms of one operation share a canonical lab
   expect(callLabel('write', { path: 'xd://mcp__linear_save_issue', content: '{}' })).toBe('LINEAR:SAVE_ISSUE');
 });
 
-test('display tokens substitute glyphs per namespace segment and leave canonical text intact', () => {
-  expect(displayToolLabel('GILES:FB')).toBe(`${ToolGlyphs.GILES}:${ToolGlyphs.FB}`);
-  expect(displayToolLabel('SKILL:SEARCH')).toBe(`${ToolGlyphs.SKILL}:${ToolGlyphs.SEARCH}`);
-  expect(displayToolLabel('Read')).toBe(ToolGlyphs.READ!);
-  // A segment without a catalogue glyph stays readable text.
-  expect(displayToolLabel('GILES:RECALL')).toBe(`${ToolGlyphs.GILES}:RECALL`);
-  expect(displayToolLabel('LINEAR:GET_ISSUE')).toBe('LINEAR:GET_ISSUE');
-  // ASCII mode and summaries use the canonical label only.
-  expect(displayToolLabel('GILES:FB', true)).toBe('GILES:FB');
-  expect(displayToolLabel('Read', true)).toBe('READ');
-  for (const glyph of Object.values(ToolGlyphs)) expect(glyph).toMatch(/[\uE000-\uF8FF\u{F0000}-\u{FFFFD}]/u);
+test('tool rows preserve textual namespaces and compact Giles work actions', () => {
+  for (const label of ['WEB:SEARCH', 'SKILL:SEARCH', 'READ', 'WRITE', 'EDIT', 'JS', 'PYTHON3']) {
+    expect(displayToolLabel(label)).toBe(label);
+  }
+  expect(displayToolLabel(callLabel('giles', { action: 'work_check' }))).toBe('GILES:WK:CHK');
+  expect(displayToolLabel(callLabel('giles', { action: 'work_finish' }))).toBe('GILES:WK:FIN');
+  expect(displayToolLabel(callLabel('giles', { action: 'retro_status' }))).toBe('GILES:RETRO:STATUS');
+  expect(displayToolLabel(callLabel('giles', { action: 'work_resume' }))).toBe('GILES:WK:RESUME');
 });
 
 test('skill identity survives namespaces and resource reads even when acronyms collide', () => {

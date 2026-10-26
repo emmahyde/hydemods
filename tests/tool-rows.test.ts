@@ -10,7 +10,7 @@ import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, setSkillNames, withoutCopiedLines, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
-import { displayToolLabel } from "../lib/tool-glyphs";
+import { displayToolLabel } from "../lib/tool-labels";
 import { letterColor, ToolRows } from "../lib/tool-rows-host";
 
 test("a model line copied from the prompt's examples is dropped, so the row keeps the intent", () => {
