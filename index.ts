@@ -2235,6 +2235,34 @@ export default function hydemods(pi: ExtensionAPI): void {
 		};
 	});
 
+	// Recall payloads are intentionally hidden in the transcript. Mirror the latest into
+	// UI chrome without changing model context or injecting duplicate messages.
+	let recalledText = "";
+	const refreshRecallWidget = (ctx: ExtensionContext, text: string) => {
+		recalledText = text;
+		if (!ctx.hasUI) return;
+		if (!text) {
+			ctx.ui.setWidget("hydemods:recall", undefined);
+			return;
+		}
+		const titles = [...text.matchAll(/^- \*\*\[\[[^\]]+\]\]\*\* — \*[^*]+\* — (.+)$/gm)].map(match => match[1]!);
+		ctx.ui.setWidget("hydemods:recall", (_tui, theme) => {
+			const body = new Markdown(text, 0, 0, getMarkdownTheme());
+			return {
+				render: (width: number) => ctx.ui.getToolsExpanded()
+					? body.render(width)
+					: [theme.fg("muted", truncateToWidth(`🧠 Recalled ${titles.length} pages · Ctrl+O details · ${titles.join(" · ")}`, Math.max(1, width), Ellipsis.Unicode))],
+				invalidate: () => body.invalidate(),
+			};
+		}, { placement: "belowEditor" });
+	};
+	pi.on("context", (event, ctx) => {
+		const recall = event.messages.findLast(message => message.role === "custom" && (message.customType === "librarian-recall-context" || message.customType === "wiki-recall-context"));
+		if (recall?.role !== "custom") return;
+		const text = typeof recall.content === "string" ? recall.content : recall.content.filter(block => block.type === "text").map(block => "text" in block ? block.text : "").join("\n");
+		if (text !== recalledText) refreshRecallWidget(ctx, text);
+	});
+
 	/* ------------------------- TOON for the model ------------------------- */
 
 	// The model reads JSON tool results as TOON; the persisted result and every card keep the
@@ -2963,6 +2991,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 		thoughtStale = true;
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
+		const recall = ctx.sessionManager.getBranch().findLast(entry => entry.type === "custom_message" && (entry.customType === "librarian-recall-context" || entry.customType === "wiki-recall-context"));
+		refreshRecallWidget(ctx, recall?.type === "custom_message" && typeof recall.content === "string" ? recall.content : "");
 		void pinHostTitle(ctx);
 		syncPaneTitle(ctx);
 	};
