@@ -2245,7 +2245,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			ctx.ui.setWidget("hydemods:recall", undefined);
 			return;
 		}
-		const titles = [...text.matchAll(/^- \*\*\[\[[^\]]+\]\]\*\* — \*[^*]+\* — (.+)$/gm)].map(match => match[1]!);
+		const titles = [...text.matchAll(/^(?:-|\d+\.) \*\*\[\[[^\]]+\]\]\*\* — \*[^*]+\* — (.+)$/gm)].map(match => match[1]!);
 		ctx.ui.setWidget("hydemods:recall", (_tui, theme) => {
 			const body = new Markdown(text, 0, 0, getMarkdownTheme());
 			return {
