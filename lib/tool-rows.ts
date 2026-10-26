@@ -321,7 +321,6 @@ export const CallSystemPrompt = [
  "Reply with only one phrase of 3 to 12 words, at most 80 characters. No quotes, no markdown, no trailing period.",
  "Start with an -ing verb that names the agent's purpose, such as Understanding, Tracing, Checking, Looking for, Making, Documenting, Testing.",
  "Never use the tool's name or any form of it (Read, Reading, Grep, Grepping, Search, Searching, Edit, Editing, Bash, Running); the row already shows the tool.",
- "Write ASD-STE100 simple English: common words, one idea.",
  "Never name the file the call reads, writes or edits; the row already shows it. Never give line numbers.",
  "Code, config, rule or prompt edit or write: say what the agent is making the program do, never that text was reworded, edited or updated.",
  "README or doc edit: Documenting what the doc now says.",
