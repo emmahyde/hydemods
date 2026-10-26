@@ -40,6 +40,7 @@ test('tool rows preserve textual namespaces and compact Giles work actions', () 
   expect(displayToolLabel(callLabel('giles', { action: 'work_finish' }))).toBe('GILES:WK:FIN');
   expect(displayToolLabel(callLabel('giles', { action: 'retro_status' }))).toBe('GILES:RETRO:STATUS');
   expect(displayToolLabel(callLabel('giles', { action: 'work_resume' }))).toBe('GILES:WK:RESUME');
+  expect(displayToolLabel(callLabel('giles', { action: 'knowledge_search' }))).toBe('GILES:KNWLG:SEARCH');
 });
 
 test('skill identity survives namespaces and resource reads even when acronyms collide', () => {
