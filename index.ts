@@ -148,10 +148,10 @@ const TWEAK_DEFS: TweakDef[] = [
 	},
 	{
 		name: "last-prompt-drawer",
-		title: "Last prompt drawer",
-		description: "Shows a truncated preview of your latest prompt above the editor.",
-		category: "Interface",
-		render: () => "Automatic; no controls. The preview truncates to the terminal width.",
+		title: "Last prompt widget",
+		description: "Shows a caret-prefixed preview of your latest prompt below the editor, after the thinking widget.",
+		category: "Widgets",
+		render: () => "Automatic; no controls. Keeps the ❯ caret and truncates the preview to the terminal width.",
 	},
 	{
 		name: "latest-thought-panel",
@@ -2261,7 +2261,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 			.replace(/\s+/g, " ")
 			.trim();
 
-	// Drawer above the editor: as much of the latest prompt as fits, then an ellipsis.
+	// Below-editor widget: the latest prompt, caret-prefixed and truncated to fit.
 	const refreshLastPromptDrawer = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		const preview = flattenPrompt(lastPrompt);
@@ -2278,7 +2278,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 				},
 				invalidate() { },
 			}),
-			{ placement: "aboveEditor" },
+			{ placement: "belowEditor" },
 		);
 	};
 
@@ -2381,6 +2381,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 			},
 			{ placement: "belowEditor" },
 		);
+		// Below-editor widgets stack in insertion order: italic thoughts, then the caret preview.
+		refreshLastPromptDrawer(ctx);
 	};
 
 	const noteThought = (message: { role?: unknown; content?: unknown }) => {
