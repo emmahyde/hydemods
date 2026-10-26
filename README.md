@@ -96,6 +96,11 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
   - Viewer keys: `←`/`→` move, `f` toggles fit and actual size, `c` copies the source path, `d` deletes, `esc` closes. Formats: png, jpg, gif, webp, svg, avif and bmp, up to 50 MB.
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
+- **`/dispatch <assignment>`.** Launches a general-purpose subagent directly, without a main-agent tool call. The editor remains available while it runs.
+  - Results and failures appear in chat. They do not start an idle main-agent turn; during a turn, they reach the active agent.
+  - The subagent uses the current model and shares the working directory, but not the main conversation. Include all needed context in the assignment.
+  - `/dispatch cancel` stops all agents launched by this command. A session switch, branch, tree navigation, or shutdown also cancels them.
+  - Dispatched agents can edit files. Avoid assignments that conflict with concurrent work in the same directory.
 - **`recommend_tools`.** Asks the `judge` role which tools and skills fit a task. Each candidate becomes one yes/no question, sent in batches of 40. Returns up to `limit` matches (default 5) scoring at least 50%, best first. Judge cost is billed to the session.
   Put `/recommend-tools` anywhere in a prompt to run it on that prompt. The marker is removed before the prompt is sent. The picks go to the agent as a visible message ahead of the turn. The tool toggle switches the marker off too.
 - **`ror` (ready for review).** Finds your ready PRs, groups them in tiers, and sends them in a Slack DM.

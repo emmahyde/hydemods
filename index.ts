@@ -65,6 +65,7 @@ import { fetchMyPrs, refreshMyPrs, withPrDrawer, withVaultDrawer, type EditorPro
 import { withXdDrawer, withProcDrawer } from "./lib/xd-proc-drawers";
 import { xdSourcesFor, procSourcesFor, asyncJobsFor } from "./lib/host-runtime";
 import { registerMarketplace } from "./lib/marketplace";
+import { registerDispatch } from "./lib/dispatch";
 import { registerUrlPreviewLifecycle } from "./lib/url-previews";
 import { applyClassifications, assignTier, formatRorMessage, groupByTier, loadRorConfig, prKey, readyPrs, resolvePrRefs, rorConfigPath, saveRorConfig, sendSelfDm } from "./lib/ror";
 import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
@@ -2054,6 +2055,7 @@ function panelComponent(theme: ThemeLike, done: (result: undefined) => void, dis
 
 export default function hydemods(pi: ExtensionAPI): void {
 	registerMarketplace(pi);
+	registerDispatch(pi);
 	let stopStallWatch: (() => void) | undefined;
 	const display: ToolDisplayState = { collapsedLines: readSetting(collapsedLinesSetting), cardsOn: true };
 	const repaintToolCards = (ctx: ExtensionContext) => {
