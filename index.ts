@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { Box, Ellipsis, formatMetricRow, Markdown, type MetricSpec, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { ThoughtPanelLines, thoughtPanelRows } from "./lib/thought-panel";
-import { createGilesWidget, GilesState, GilesStatusType } from "./lib/giles-widget";
-import { blocksText, gilesSource, gilesWrapContent } from "./lib/giles-output";
 import { code as codeNode } from "@oh-my-pi/pi-tui/native/describe";
 // Only host-mapped specifiers share the running instance; a deeper pi-tui path would patch a private copy.
 import { AssistantMessageComponent, ReadToolGroupComponent, ToolExecutionComponent, UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -2226,56 +2224,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// card now shows that content, so those messages render as nothing.
 	pi.registerMessageRenderer("integrated-tool-expansion", () => ({ render: () => [], invalidate() { } }));
 
-	// One Giles widget carries the startup notice, model, retrieval mode, action status and recall.
-	// Messages and live bus updates feed one state; the widget reads it, so nothing is shown twice.
-	const giles = new GilesState();
-	let gilesCtx: ExtensionContext | undefined;
-	const refreshGilesWidget = (ctx: ExtensionContext) => {
-		gilesCtx = ctx;
-		if (!ctx.hasUI) return;
-		if (giles.empty) {
-			ctx.ui.setWidget("hydemods:recall", undefined);
-			return;
-		}
-		ctx.ui.setWidget("hydemods:recall", (_tui, theme) => createGilesWidget(giles, theme, () => ctx.ui.getToolsExpanded()), { placement: "belowEditor" });
-	};
-	// Fill from the persisted branch. A session switch starts from nothing; a fresh start keeps rows the
-	// adapter already published live this tick, because those are newer than anything persisted.
-	const restoreGilesState = (ctx: ExtensionContext, replace: boolean) => {
-		const persisted = new GilesState();
-		for (const entry of ctx.sessionManager.getBranch()) if (entry.type === "custom_message") persisted.applyMessage(entry.customType, entry.content);
-		if (replace) giles.reset();
-		giles.fillFrom(persisted);
-		refreshGilesWidget(ctx);
-	};
-	// The notice text lives in the widget; the transcript copy renders nothing while the widget holds it.
-	for (const type of ["giles-session-notice", "librarian-session-notice"]) pi.registerMessageRenderer(type, (message, _options, theme) => {
-		const source = gilesSource(blocksText(message.content));
-		return {
-			render: (width: number) => source === giles.notice ? [] : [theme.fg("muted", truncateToWidth(source.replace(/\s+/g, " ").trim(), Math.max(1, width), Ellipsis.Unicode))],
-			invalidate() { },
-		};
-	});
-	// The adapter asks before it drops its legacy footer rows: answering synchronously says this widget
-	// renders key/text rows, failures included. Unsubscribing at shutdown makes absence detectable.
-	const stopGilesProbe = pi.events.on("giles:status-probe", (probe) => {
-		if (gilesCtx?.hasUI === false || !probe || typeof probe !== "object") return;
-		Object.assign(probe, { accepts: true, failures: true });
-	});
-	pi.on("session_shutdown", () => stopGilesProbe());
-	pi.events.on("giles:status", (data) => {
-		if (giles.applyStatus(data) && gilesCtx) refreshGilesWidget(gilesCtx);
-	});
-	pi.on("message_end", (event, ctx) => {
-		const message = event.message;
-		if (message.role === "custom" && giles.applyMessage(message.customType, message.content)) refreshGilesWidget(ctx);
-	});
-	pi.on("context", (event, ctx) => {
-		let changed = false;
-		for (const message of event.messages) if (message.role === "custom" && giles.applyMessage(message.customType, message.content)) changed = true;
-		if (changed || !gilesCtx) refreshGilesWidget(ctx);
-	});
-
 	/* ------------------------- TOON for the model ------------------------- */
 
 	// The model reads JSON tool results as TOON; the persisted result and every card keep the
@@ -2286,18 +2234,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.on("context", (event) => {
 		const convertToolResults = isTweakEnabled("tool-results-toon");
 		let changed = false;
-		// Status updates exist for the widget; they never reach the model. Everything else Giles sends
-		// is wrapped block by block, so existing envelopes, image blocks and source strings pass untouched.
-		const messages = event.messages.filter(message => !(message.role === "custom" && GilesStatusType.test(message.customType))).map((message) => {
-			if (message.role === "custom" && /^(?:giles|librarian|wiki)-(?:recall-context|session-notice|observe-reminder|action-report)$/.test(message.customType)) {
-				changed = true;
-				return { ...message, content: gilesWrapContent(message.customType.replace(/^(?:giles|librarian|wiki)-/, ""), message.content) };
-			}
-			// `giles_<group>` devices are current; `giles` and `librarian` remain in persisted transcripts.
-			if (message.role === "toolResult" && (/^giles_[a-z]+$/.test(message.toolName) || ["giles", "librarian"].includes(message.toolName))) {
-				changed = true;
-				return { ...message, content: gilesWrapContent(message.isError ? "error" : "result", message.content) };
-			}
+		const messages = event.messages.map((message) => {
 			if (!convertToolResults) return message;
 			if (message.role !== "toolResult" || message.isError) return message;
 			const source = toolResultText(message.content);
@@ -3009,7 +2946,6 @@ export default function hydemods(pi: ExtensionAPI): void {
 		thoughtStale = true;
 		refreshThoughtPanel(ctx);
 		refreshLastPromptDrawer(ctx);
-		restoreGilesState(ctx, (_event as { type?: string } | undefined)?.type !== "session_start");
 		void pinHostTitle(ctx);
 		syncPaneTitle(ctx);
 	};
