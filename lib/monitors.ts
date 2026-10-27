@@ -20,6 +20,7 @@
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { encode } from "@toon-format/toon";
 
 export type MonitorMode = "stream" | "poll" | "exit";
 
@@ -408,10 +409,22 @@ export function formatMonitorResult(spec: MonitorSpec, result: MonitorResult): s
 	return [
 		`Monitor "${spec.name}" ${head} (${result.runs} run${result.runs === 1 ? "" : "s"}, ${result.elapsedSec}s).`,
 		`Command: ${spec.command}`,
-		result.output ? `Last output:\n${result.output}` : "No output.",
+		result.output ? `Last output:\n${formatMonitorOutput(result.output)}` : "No output.",
 	].join("\n");
 }
 
 export function formatMonitorEvent(spec: MonitorSpec, lines: string[]): string {
-	return `Monitor event (${spec.name}): ${lines.join("\n")}\nThe monitor is still running; react if this matters, otherwise end your turn. Do not poll.`;
+	return `Monitor event (${spec.name}):\n${formatMonitorOutput(lines.join("\n"))}\nThe monitor is still running; react if this matters, otherwise end your turn. Do not poll.`;
+}
+/** Keep JSON documents structured, and preserve non-JSON watcher lines as strings. */
+export function formatMonitorOutput(output: string): string {
+	if (!output) return "";
+	try {
+		return encode({ output: JSON.parse(output) });
+	} catch {
+		const lines = output.split(/\r?\n/).map(line => {
+			try { return JSON.parse(line); } catch { return line; }
+		});
+		return encode({ output: lines });
+	}
 }
