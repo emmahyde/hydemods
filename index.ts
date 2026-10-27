@@ -2221,6 +2221,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
 	pi.registerMessageRenderer("integrated-tool-expansion", () => ({ render: () => [], invalidate() { } }));
+	// Giles lint, rebuild and ingest reports are background results the model reads; the user does not need a card for each.
+	pi.registerMessageRenderer("giles-action-report", () => ({ render: () => [], invalidate() { } }));
 
 	/* ------------------------- TOON for the model ------------------------- */
 
