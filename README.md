@@ -88,7 +88,9 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
   - `stream` (default): each stdout line is a Monitor event that starts a turn. Print state changes only.
   - `poll`: runs every `intervalSec`. It reports when the command exits 0 or the output matches `until`.
   - `exit`: runs once. It reports on exit.
-  - `timeoutMin` defaults to 60. A final card shows the exit code and the last 8 lines.
+  - `timeoutMin` defaults to 60. A final card shows the exit code.
+  - Event and final output use TOON for JSON, JSONL, and plain text. Non-JSON lines remain strings.
+  - Cards show at most six body rows, clipped to terminal width. Ctrl+O expands the full output.
   - When the session exposes its job manager, each monitor is also one native job. `proc://` lists it for its whole life, `proc://<id>/kill` cancels it, and `list` shows its `proc://` id. Without a job manager the monitor runs the same way, without a `proc://` entry.
 - **`gallery`.** A shared picture gallery: a live local web page you keep open beside the terminal, so pictures stay out of the scrollback. The agent pushes image files (`paths`) or a `url`, with a `caption`. Each picture appears in the open tab at once, and with **follow** on, the viewer opens it. Other operations: `open`, `list`, `remove`, `clear`. `/gallery` opens the page.
   - One gallery per project, kept across sessions in `~/.omp/gallery/<project>-<hash>/`. Every session of the project shares one stable `127.0.0.1` port, so a tab kept open survives restarts. Pictures are grouped by session.

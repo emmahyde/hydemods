@@ -72,7 +72,8 @@ import { classifyPrs, loadGuidance, rorGuidancePath } from "./lib/ror-classify";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { execFile } from "node:child_process";
 import { detectStalls, defaultStallThresholds, type StallAlert } from "./lib/stall-watch";
-import { formatMonitorEvent, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { formatMonitorEvent, formatMonitorOutput, formatMonitorResult, MonitorRegistry, type MonitorJobsHost, type MonitorResult, type MonitorSpec } from "./lib/monitors";
+import { monitorOutputComponent } from "./lib/monitor-output";
 import { galleryPort, galleryStore, startGalleryServer, type GalleryServer, type GalleryStore } from "./lib/gallery";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
@@ -83,7 +84,6 @@ import { cfgDisabledExtensions, cfgSkills } from "@oh-my-pi/pi-coding-agent/exte
 
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
 type MonitorEventDetails = { spec: MonitorSpec; lines: string[] };
-const MONITOR_COLLAPSED_LINES = 8;
 import { runawayEdit } from "./lib/runaway-edit";
 
 type StallMessageDetails = Pick<StallAlert, "agentName" | "kind" | "idleMinutes" | "action" | "toolName" | "model">;
@@ -2677,14 +2677,11 @@ export default function hydemods(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer<MonitorEventDetails>("hydemods-monitor-event", (message, { expanded }, theme) => {
 		if (!message.details) return undefined;
 		const { spec, lines } = message.details;
-		const shown = expanded ? lines : lines.slice(0, MONITOR_COLLAPSED_LINES);
-		const hidden = lines.length - shown.length;
-		const rows = [
-			`${theme.fg("accent", "Monitor event:")} ${theme.fg("text", shown[0] ?? "")} ${theme.fg("dim", `· ${spec.name}`)}`,
-			...shown.slice(1).map(line => `  ${theme.fg("text", line)}`),
-			...(hidden > 0 ? [theme.fg("muted", `  … ${hidden} more line${hidden === 1 ? "" : "s"} (Ctrl+O)`)] : []),
-		];
-		return new Text(rows.join("\n"), 1, 0);
+		return monitorOutputComponent(
+			`${theme.fg("accent", "Monitor event:")} ${theme.fg("text", sanitizeTerminalText(spec.name))}`,
+			formatMonitorOutput(lines.join("\n")),
+			expanded,
+		);
 	});
 	// Best effort: when the session exposes its async job manager, the monitor's loop is also
 	// registered as one native job, so proc:// lists it for its whole life and `proc://<id>/kill`
@@ -2717,16 +2714,11 @@ export default function hydemods(pi: ExtensionAPI): void {
 		}[result.outcome];
 		const status = theme.fg(ok ? "success" : result.outcome === "timed-out" ? "warning" : "error", label);
 		const meta = theme.fg("dim", `${result.elapsedSec}s · ${result.runs} run${result.runs === 1 ? "" : "s"}`);
-		const lines = result.output ? result.output.split("\n") : [];
-		const shown = expanded ? lines : lines.slice(-MONITOR_COLLAPSED_LINES);
-		const hidden = lines.length - shown.length;
-		const rows = [
-			`${theme.fg("accent", "Monitor")} ${theme.bold(spec.name)}  ${status}  ${meta}`,
-			theme.fg("dim", `$ ${spec.command}`),
-			...(hidden > 0 ? [theme.fg("muted", `… ${hidden} earlier line${hidden === 1 ? "" : "s"} (Ctrl+O)`)] : []),
-			...shown.map(line => theme.fg("text", line)),
-		];
-		return new Text(rows.join("\n"), 1, 0);
+		return monitorOutputComponent(
+			`${theme.fg("accent", "Monitor")} ${theme.bold(sanitizeTerminalText(spec.name))}  ${status}  ${meta}`,
+			`${sanitizeTerminalText(`$ ${spec.command}`)}\n${formatMonitorOutput(result.output)}`,
+			expanded,
+		);
 	});
 	const { Type } = pi.typebox;
 	pi.registerTool({
