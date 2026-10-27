@@ -1,0 +1,11 @@
+{
+  "id": "SRC-2026-10-27-002",
+  "captured": "2026-10-27",
+  "packet_version": "1.0",
+  "title": "fix-cofounder-feedback.md",
+  "file_path": "/tmp/fix-cofounder-feedback.md",
+  "format": "markdown",
+  "extractor": "passthrough",
+  "extraction_status": "success",
+  "content_type": "text/markdown"
+}

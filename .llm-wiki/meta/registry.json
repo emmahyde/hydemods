@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-10-27T15:38:02.433Z",
+  "pages": {
+    "concepts/cofounder-feedback-remediation": {
+      "type": "concept",
+      "title": "Cofounder feedback remediation",
+      "created": "2026-10-27",
+      "updated": "2026-10-27"
+    },
+    "sources/SRC-2026-10-27-002": {
+      "type": "source",
+      "title": "fix-cofounder-feedback.md",
+      "status": "ingested",
+      "raw_path": "raw/sources/SRC-2026-10-27-002/extracted.md",
+      "source_id": "SRC-2026-10-27-002",
+      "format": "markdown",
+      "captured": "2026-10-27"
+    }
+  }
+}

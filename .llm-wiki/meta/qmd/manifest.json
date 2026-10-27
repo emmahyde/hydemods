@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "vaultId": "30e0786b-b000-40dc-ad33-c3340295baab",
+  "entries": {
+    "documents/canonical/concepts/cofounder-feedback-remediation.md": {
+      "sourcePath": "/Users/emma.hyde/worktrees/hydemods/.llm-wiki/wiki/concepts/cofounder-feedback-remediation.md",
+      "vaultId": "30e0786b-b000-40dc-ad33-c3340295baab",
+      "pageId": "concepts/cofounder-feedback-remediation",
+      "contentHash": "452d270acb3a64cc01c5981d3a6f1c960e77fd72da780f7c11d232a190d76dc8",
+      "role": "canonical",
+      "type": "concept"
+    },
+    "documents/evidence/sources/SRC-2026-10-27-002.md": {
+      "sourcePath": "/Users/emma.hyde/worktrees/hydemods/.llm-wiki/wiki/sources/SRC-2026-10-27-002.md",
+      "vaultId": "30e0786b-b000-40dc-ad33-c3340295baab",
+      "pageId": "sources/SRC-2026-10-27-002",
+      "contentHash": "cec51f1bd4e540e7eb1f6575b8768bc61c2270c40521b5bd2e364be46c6d8860",
+      "role": "evidence",
+      "type": "source"
+    }
+  }
+}
