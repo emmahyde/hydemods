@@ -2293,7 +2293,8 @@ export default function hydemods(pi: ExtensionAPI): void {
 				changed = true;
 				return { ...message, content: gilesWrapContent(message.customType.replace(/^(?:giles|librarian|wiki)-/, ""), message.content) };
 			}
-			if (message.role === "toolResult" && ["giles", "librarian"].includes(message.toolName)) {
+			// `giles_<group>` devices are current; `giles` and `librarian` remain in persisted transcripts.
+			if (message.role === "toolResult" && (/^giles_[a-z]+$/.test(message.toolName) || ["giles", "librarian"].includes(message.toolName))) {
 				changed = true;
 				return { ...message, content: gilesWrapContent(message.isError ? "error" : "result", message.content) };
 			}

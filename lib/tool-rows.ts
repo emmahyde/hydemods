@@ -206,13 +206,19 @@ function operationArgs(args: unknown): Record<string, unknown> | undefined {
  } catch { return record; }
 }
 
+function gilesActionLabel(action: string): string {
+ return `GILES:${action === "feedback_submit" ? "FB" : action.toUpperCase()}`;
+}
+
 function deviceLabel(device: string, args: unknown): string {
- if (device === "giles" || device === "librarian") {
-  const action = operationArgs(args)?.action;
-  if (typeof action !== "string" || !/^[a-z][a-z0-9_]*$/i.test(action)) return "GILES";
-  return `GILES:${action === "feedback_submit" ? "FB" : action.toUpperCase()}`;
- }
+ const action = operationArgs(args)?.action;
+ const named = typeof action === "string" && /^[a-z][a-z0-9_]*$/i.test(action) ? action : undefined;
+ if (device === "giles" || device === "librarian") return named ? gilesActionLabel(named) : "GILES";
+ // `giles_<group>` devices: the label is the full operation (`work_finish`), so it matches older single-device rows.
+ const group = /^giles_([a-z]+)$/.exec(device)?.[1];
+ if (group && named) return gilesActionLabel(group === "wiki" ? named : `${group}_${named}`);
  if (LabelFor[device]) return LabelFor[device]!;
+ if (group) return `GILES:${group.toUpperCase()}`;
  if (device.startsWith("wiki_")) return `GILES:${device.slice(5).toUpperCase()}`;
  if (device.startsWith("mcp__")) {
   const bare = device.slice(5);

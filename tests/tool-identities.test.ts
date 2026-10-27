@@ -12,12 +12,19 @@ test('search calls retain their namespace across direct and device forms', () =>
   expect(callLabel('skill_search', { task: 'rendering' })).toBe(skill);
 });
 
-test('a unified Giles device retains the action instead of merging unrelated operations', () => {
-  const feedback = callLabel('write', { path: 'xd://giles', content: '{"action":"feedback_submit","args":{"feedback":"Keep this"}}' });
-  const recall = callLabel('giles', { action: 'recall', args: { query: 'Keep this' } });
+test('Giles group devices retain the action instead of merging unrelated operations', () => {
+  const feedback = callLabel('write', { path: 'xd://giles_feedback', content: '{"action":"submit","args":{"feedback":"Keep this"}}' });
+  const recall = callLabel('giles_wiki', { action: 'recall', args: { query: 'Keep this' } });
   expect(feedback).toBe('GILES:FB');
   expect(recall).toBe('GILES:RECALL');
   expect(feedback).not.toBe(recall);
+  // Same in-device name on two devices stays two operations.
+  expect(callLabel('giles_wiki', { action: 'status' })).toBe('GILES:STATUS');
+  expect(callLabel('giles_retro', { action: 'status' })).toBe('GILES:RETRO_STATUS');
+  // Doc-topic reads name the device.
+  expect(callLabel('read', { path: 'xd://giles_work/finish' })).toBe('GILES:WORK');
+  // Rows from the retired single device keep their labels.
+  expect(callLabel('write', { path: 'xd://giles', content: '{"action":"feedback_submit","args":{}}' })).toBe(feedback);
 });
 
 test('direct, device and historical forms of one operation share a canonical label', () => {
@@ -36,11 +43,11 @@ test('tool rows preserve textual namespaces and compact Giles work actions', () 
   for (const label of ['WEB:SEARCH', 'SKILL:SEARCH', 'READ', 'WRITE', 'EDIT', 'JS', 'PYTHON3']) {
     expect(displayToolLabel(label)).toBe(label);
   }
-  expect(displayToolLabel(callLabel('giles', { action: 'work_check' }))).toBe('GILES:WK:CHK');
-  expect(displayToolLabel(callLabel('giles', { action: 'work_finish' }))).toBe('GILES:WK:FIN');
-  expect(displayToolLabel(callLabel('giles', { action: 'retro_status' }))).toBe('GILES:RETRO:STATUS');
-  expect(displayToolLabel(callLabel('giles', { action: 'work_resume' }))).toBe('GILES:WK:RESUME');
-  expect(displayToolLabel(callLabel('giles', { action: 'knowledge_search' }))).toBe('GILES:KNWLG:SEARCH');
+  expect(displayToolLabel(callLabel('giles_work', { action: 'check' }))).toBe('GILES:WK:CHK');
+  expect(displayToolLabel(callLabel('giles_work', { action: 'finish' }))).toBe('GILES:WK:FIN');
+  expect(displayToolLabel(callLabel('giles_retro', { action: 'status' }))).toBe('GILES:RETRO:STATUS');
+  expect(displayToolLabel(callLabel('giles_work', { action: 'resume' }))).toBe('GILES:WK:RESUME');
+  expect(displayToolLabel(callLabel('giles_knowledge', { action: 'search' }))).toBe('GILES:KNWLG:SEARCH');
 });
 
 test('skill identity survives namespaces and resource reads even when acronyms collide', () => {
