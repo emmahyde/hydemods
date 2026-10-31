@@ -57,7 +57,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 - **Text tool labels.** Live and burst rows show names such as `WEB:SEARCH`, `SKILL:SEARCH` and `GILES:RETRO:STATUS`, without icon substitutions. Giles uses `KNWLG` for knowledge and `WK` for work, including `GILES:WK:CHK` and `GILES:WK:FIN`. Skills retain display-only, collision-safe acronyms; no command aliases are added.
   Work references use `WK:REF`, evidence uses `WK:EVID`, and dependency edits use `WK:DEP:ADD` / `WK:DEP:RM`. Feedback uses `FB:SEND`, `FB:STATUS`, `FB:CHK` and `FB:RECON`; remaining actions keep readable words.
 - **Runaway edit guard.** An `edit` call stops when its input repeats `*** End Patch` three times or passes 96 KB. The agent then retries with small hashline ops.
-- **Tool toggles.** `/hydemods` also switches the `monitor`, `call_model`, `agent_model`, `recommend_tools`, and `ror` tools. Off removes the tool from the active set. Off for `ror` also turns `/ror` into a no-op. The runaway edit guard has its own toggle too. All default to on.
+- **Tool toggles.** `/hydemods` also switches the `monitor`, `call_model`, `council`, `agent_model`, `recommend_tools`, and `ror` tools. Off removes the tool from the active set. Off for `ror` also turns `/ror` into a no-op. The runaway edit guard has its own toggle too. All default to on.
 - **Message backgrounds.** `/hydemods` has a Colors section with a preset row each for prompts, responses, and tool calls (`off`, `slate`, `blue`, `green`, `amber`, `purple`, `rose`). `off` keeps your theme color, and it is the default.
   - Presets pick a dark or light tint to match your theme. To use any color, set `hydemods.userBgHex`, `hydemods.assistantBgHex`, or `hydemods.toolBgHex` to `#rrggbb` in `settings.yaml`. A hex wins over the preset.
   - The tool color covers pending and successful calls. Failed calls stay red.
@@ -101,6 +101,11 @@ Eval cells that print `archive` listings or a session detail (sessions, projects
   - The first push opens the page when no tab shows it. Inside Orca it opens as a tab of Orca's own browser in this workspace, and a later open brings that tab forward instead of adding another. Outside Orca, or when Orca does not answer, it opens in the system browser.
   - Viewer keys: `←`/`→` move, `f` toggles fit and actual size, `c` copies the source path, `d` deletes, `esc` closes. Formats: png, jpg, gif, webp, svg, avif and bmp, up to 50 MB.
 - **`call_model`.** Sends a one-shot prompt to a model (`provider/id`, bare id, or `@role`, with an optional `:effort`). No tools, no history.
+- **`council`.** Answers one question with two model members: a lead researcher (default Clio) and an analyst (default Data). They take five turns: context, data needs, data, analysis, synthesis. Each turn after the first sees the question and all earlier turns.
+  - Returns the lead's synthesis; `details.turns` holds every turn. Progress shows one line per finished turn.
+  - Options: `model` (default `@default`), custom `lead` / `analyst` (`name`, `role`, `skills`), `maxTokens` per turn, `timeoutSec` (default 300, checked between turns).
+  - Five model calls per question. Figures come from model memory, not retrieval; the data turn is told to name sources or mark estimates.
+  - Adapted from the GenAI_Agents multi-agent collaboration notebook.
 - **`agent_model`.** Sets the model for a subagent type (`reviewer`, `task`, `scout`) for this session only. Operations: `list`, `set`, `clear`. `clear` cannot remove a saved setting. Use `/agents` for that.
 - **`/dispatch <assignment>`.** Launches a general-purpose subagent directly, without a main-agent tool call. The editor remains available while it runs.
   - Results and failures appear in chat. They do not start an idle main-agent turn; during a turn, they reach the active agent.

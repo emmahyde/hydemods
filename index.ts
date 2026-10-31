@@ -75,6 +75,7 @@ import { monitorOutputComponent } from "./lib/monitor-output";
 import { galleryPort, galleryStore, startGalleryServer, type GalleryServer, type GalleryStore } from "./lib/gallery";
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
+import { COUNCIL_STEPS, runCouncil } from "./lib/council";
 import { type Candidate, formatRecommendations, RECOMMEND_MARKER, recommend, stripRecommendMarker, takeMarkedPrompts } from "./lib/recommend";
 import { journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -226,6 +227,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Gives the agent recommend_tools: the judge model ranks available tools and skills for a task.",
 		category: "Tools",
 		render: () => "Each call costs one judge request per 40 candidates, billed to the session.",
+	},
+	{
+		name: "council-tool",
+		title: "council tool",
+		description: "Gives the agent council: a lead researcher and an analyst model take five turns on one question.",
+		category: "Tools",
+		render: () => "Each call costs five model requests on the chosen model (default @default).",
 	},
 	{
 		name: "ror",
@@ -2726,6 +2734,47 @@ export default function hydemods(pi: ExtensionAPI): void {
 			return { content: [{ type: "text" as const, text }], details };
 		},
 	});
+	const memberSchema = Type.Object({
+		name: Type.String(),
+		role: Type.String({ description: 'e.g. "History Research Specialist".' }),
+		skills: Type.Array(Type.String()),
+	});
+	pi.registerTool({
+		name: "council",
+		label: "Council",
+		approval: "read",
+		description: [
+			"Answer one question with a two-member model council: a lead researcher and an analyst take five turns, each seeing the transcript so far.",
+			`Turns: ${COUNCIL_STEPS.join(" → ")}. Returns the lead's synthesis; details carry every turn.`,
+			"Costs five model calls. Figures come from model memory, not retrieval: verify any number you rely on.",
+		].join(" "),
+		parameters: Type.Object({
+			question: Type.String({ description: "The question for the council." }),
+			model: Type.Optional(Type.String({ description: "provider/id, bare id, or @role, optionally with :effort. Default @default." })),
+			lead: Type.Optional(memberSchema),
+			analyst: Type.Optional(memberSchema),
+			maxTokens: Type.Optional(Type.Number({ description: "Maximum output tokens per turn." })),
+			timeoutSec: Type.Optional(Type.Number({ description: "Stop before the next turn once this has passed. Default 300." })),
+		}),
+		async execute(_id, params, signal, onUpdate, ctx) {
+			const model = params.model ?? "@default";
+			const progress: string[] = [];
+			const { answer, turns } = await runCouncil(
+				params.question,
+				(system, prompt) => callModel(ctx, { model, system, prompt, maxTokens: params.maxTokens }, signal).then(r => r.text),
+				{
+					lead: params.lead,
+					analyst: params.analyst,
+					timeoutMs: (params.timeoutSec ?? 300) * 1000,
+					onTurn: (turn, index, total) => {
+						progress.push(`${index + 1}/${total} ${turn.member}: ${turn.step}`);
+						onUpdate?.({ content: [{ type: "text" as const, text: progress.join("\n") }], details: undefined });
+					},
+				},
+			);
+			return { content: [{ type: "text" as const, text: answer }], details: { model, turns } };
+		},
+	});
 	const recommendFor = async (ctx: ExtensionContext, task: string, include: "all" | "tools" | "skills", limit: number, signal?: AbortSignal): Promise<string> => {
 		const candidates: Candidate[] = [];
 		if (include !== "skills") {
@@ -2881,7 +2930,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	});
 	// Settings-gated tools: off removes them from the active set; on restores only what this sync removed,
 	// so tools the user deactivated by other means stay off.
-	const GATED_TOOLS: Record<string, string> = { "monitor-tool": "monitor", "call-model-tool": "call_model", "agent-model-tool": "agent_model", "recommend-tools": "recommend_tools", ror: "ror" };
+	const GATED_TOOLS: Record<string, string> = { "monitor-tool": "monitor", "call-model-tool": "call_model", "council-tool": "council", "agent-model-tool": "agent_model", "recommend-tools": "recommend_tools", ror: "ror" };
 	const removedByUs = new Set<string>();
 	const syncGatedTools = () => {
 		const active = pi.getActiveTools();
