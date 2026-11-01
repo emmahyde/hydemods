@@ -17,11 +17,22 @@ export interface GalleryItem {
 	id: string;
 	/** File name inside `items/`. */
 	file: string;
+	/** This picture's own name, shown above its caption. */
+	title?: string;
 	caption?: string;
+	/** Collections the picture belongs to; the first one is its section on the page. */
+	groups?: string[];
 	/** Where the picture came from: a path or URL, as given. */
 	source: string;
 	session?: string;
 	addedAt: number;
+}
+
+/** The labels a picture can carry; `update` changes only the fields it is given. */
+export interface GalleryLabels {
+	title?: string;
+	caption?: string;
+	groups?: string[];
 }
 
 export interface Manifest {
@@ -47,11 +58,19 @@ export interface GalleryStore {
 	dir: string;
 	project: string;
 	read(): Manifest;
-	add(input: { path?: string; url?: string; caption?: string; session?: string; cwd: string }): Promise<GalleryItem>;
+	add(input: GalleryLabels & { path?: string; url?: string; session?: string; cwd: string }): Promise<GalleryItem>;
+	update(id: string, labels: GalleryLabels): GalleryItem | undefined;
 	remove(id: string): boolean;
 	clear(): number;
 	itemPath(file: string): string | undefined;
 }
+
+/** Trimmed labels with empty ones dropped; groups keep their first spelling and order. */
+const cleanLabels = ({ title, caption, groups }: GalleryLabels): GalleryLabels => {
+	const seen = new Set<string>();
+	const kept = groups?.map(group => group.trim()).filter(group => group && !seen.has(group.toLowerCase()) && seen.add(group.toLowerCase()));
+	return { ...(title?.trim() ? { title: title.trim() } : {}), ...(caption?.trim() ? { caption: caption.trim() } : {}), ...(kept?.length ? { groups: kept } : {}) };
+};
 
 export const galleryKey = (cwd: string): { name: string; hash: string } => {
 	const hash = createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 8);
@@ -82,7 +101,7 @@ export function galleryStore(cwd: string, root = join(homedir(), ".omp", "galler
 		dir,
 		project: name,
 		read,
-		async add({ path, url, caption, session, cwd: base }) {
+		async add({ path, url, title, caption, groups, session, cwd: base }) {
 			if (!path === !url) throw new Error("Give exactly one of path or url.");
 			mkdirSync(itemsDir, { recursive: true });
 			const id = randomUUID().slice(0, 8);
@@ -107,7 +126,7 @@ export function galleryStore(cwd: string, root = join(homedir(), ".omp", "galler
 				file = `${id}${ext}`;
 				writeFileSync(join(itemsDir, file), bytes);
 			}
-			const item: GalleryItem = { id, file, source: path ?? url!, addedAt: Date.now(), ...(caption ? { caption } : {}), ...(session ? { session } : {}) };
+			const item: GalleryItem = { id, file, source: path ?? url!, addedAt: Date.now(), ...cleanLabels({ title, caption, groups }), ...(session ? { session } : {}) };
 			const manifest = read();
 			manifest.items.push(item);
 			write(manifest);
@@ -120,6 +139,20 @@ export function galleryStore(cwd: string, root = join(homedir(), ".omp", "galler
 			rmSync(join(itemsDir, item.file), { force: true });
 			write({ ...manifest, items: manifest.items.filter(entry => entry.id !== id) });
 			return true;
+		},
+		update(id, labels) {
+			const manifest = read();
+			const item = manifest.items.find(entry => entry.id === id);
+			if (!item) return undefined;
+			const clean = cleanLabels(labels);
+			// A field given empty clears it; a field not given stays.
+			for (const key of ["title", "caption", "groups"] as const) {
+				if (labels[key] === undefined) continue;
+				if (clean[key] === undefined) delete item[key];
+				else Object.assign(item, { [key]: clean[key] });
+			}
+			write(manifest);
+			return item;
 		},
 		clear() {
 			const { items } = read();

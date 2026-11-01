@@ -29,6 +29,10 @@ figure.fresh { border-color: var(--new); box-shadow: 0 0 0 1px var(--new); }
 .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
 figcaption { padding: 6px 8px; border-top: 1px solid var(--line); }
 figcaption .meta { color: var(--muted); font-size: 11px; }
+.title { font-weight: 600; }
+figcaption .caption { margin-top: 2px; color: var(--muted); }
+.groups { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 2px; }
+button.group { padding: 1px 6px; border-radius: 3px; color: var(--accent); font-size: 11px; }
 #empty { color: var(--muted); padding: 40px; text-align: center; }
 #viewer { position: fixed; inset: 0; z-index: 3; display: none; grid-template-rows: 1fr auto; background: rgba(8, 9, 10, 0.96); }
 #viewer.open { display: grid; }
@@ -48,7 +52,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; color: 
 <span id="status" title="disconnected"></span>
 <h1>${title}</h1>
 <span id="count"></span>
-<input id="filter" type="search" placeholder="Filter captions">
+<input id="filter" type="search" placeholder="Filter titles, captions and groups">
 <input id="size" type="range" min="120" max="480" value="220" title="Thumbnail size">
 <label class="toggle" title="Open each new picture in the viewer"><input id="follow" type="checkbox" checked> follow</label>
 </header>
@@ -56,7 +60,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; color: 
 <div id="viewer">
 <div id="stage" class="checker"><img id="big" alt=""></div>
 <div id="bar">
-<div class="text"><div id="caption"></div><div id="meta" class="meta"></div></div>
+<div class="text"><div id="title" class="title"></div><div id="caption"></div><div id="meta" class="meta"></div></div>
 <span class="meta"><kbd>←</kbd><kbd>→</kbd> move · <kbd>f</kbd> fit · <kbd>c</kbd> copy source · <kbd>d</kbd> delete · <kbd>esc</kbd> close</span>
 <button id="copy">Copy source</button>
 <button id="delete">Delete</button>
@@ -79,48 +83,80 @@ $("filter").oninput = render;
 
 function render() {
 	const query = $("filter").value.trim().toLowerCase();
-	state.shown = state.items.filter(item => !query || (item.caption || "").toLowerCase().includes(query) || item.source.toLowerCase().includes(query)).reverse();
+	const visible = state.items.filter(item => !query || [item.title, item.caption, item.source, ...(item.groups || [])].some(text => (text || "").toLowerCase().includes(query))).reverse();
+	state.shown = visible;
 	$("count").textContent = state.items.length + (state.items.length === 1 ? " picture" : " pictures");
 	const main = $("main");
 	main.replaceChildren();
 	if (!state.shown.length) {
 		const empty = document.createElement("div");
 		empty.id = "empty";
-		empty.textContent = state.items.length ? "No caption matches." : "No pictures yet. The agent adds them with the gallery tool.";
+		empty.textContent = state.items.length ? "No picture matches." : "No pictures yet. The agent adds them with the gallery tool.";
 		main.append(empty);
 		return;
 	}
-	let group = null, grid = null;
-	state.shown.forEach((item, index) => {
-		const label = item.session || "No session";
-		if (label !== group) {
-			group = label;
-			const heading = document.createElement("h2");
-			heading.textContent = label;
-			grid = document.createElement("div");
-			grid.className = "grid";
-			main.append(heading, grid);
-		}
-		const figure = document.createElement("figure");
-		if (state.fresh.has(item.id)) figure.className = "fresh";
-		const thumb = document.createElement("div");
-		thumb.className = "thumb checker";
-		const img = document.createElement("img");
-		img.loading = "lazy";
-		img.src = "/items/" + encodeURIComponent(item.file);
-		img.alt = item.caption || "";
-		thumb.append(img);
-		const caption = document.createElement("figcaption");
+	// Sections follow each picture's first group, newest section first; the viewer walks the same order.
+	const sections = new Map();
+	for (const item of visible) {
+		const name = (item.groups || [])[0] || "Ungrouped";
+		if (!sections.has(name)) sections.set(name, []);
+		sections.get(name).push(item);
+	}
+	state.shown = [...sections.values()].flat();
+	let index = 0;
+	for (const [name, items] of sections) {
+		const heading = document.createElement("h2");
+		heading.textContent = name + " · " + items.length;
+		const grid = document.createElement("div");
+		grid.className = "grid";
+		main.append(heading, grid);
+		for (const item of items) grid.append(figureFor(item, index++));
+	}
+}
+
+const label = item => item.title || item.source.split("/").pop();
+
+function figureFor(item, index) {
+	const figure = document.createElement("figure");
+	if (state.fresh.has(item.id)) figure.className = "fresh";
+	const thumb = document.createElement("div");
+	thumb.className = "thumb checker";
+	const img = document.createElement("img");
+	img.loading = "lazy";
+	img.src = "/items/" + encodeURIComponent(item.file);
+	img.alt = label(item);
+	thumb.append(img);
+	const caption = document.createElement("figcaption");
+	const title = document.createElement("div");
+	title.className = "title";
+	title.textContent = label(item);
+	caption.append(title);
+	if (item.caption) {
 		const text = document.createElement("div");
-		text.textContent = item.caption || item.source.split("/").pop();
-		const meta = document.createElement("div");
-		meta.className = "meta";
-		meta.textContent = time(item.addedAt);
-		caption.append(text, meta);
-		figure.append(thumb, caption);
-		figure.onclick = () => openAt(index);
-		grid.append(figure);
-	});
+		text.className = "caption";
+		text.textContent = item.caption;
+		caption.append(text);
+	}
+	if (item.groups) {
+		const chips = document.createElement("div");
+		chips.className = "groups";
+		for (const group of item.groups) {
+			const chip = document.createElement("button");
+			chip.className = "group";
+			chip.textContent = group;
+			chip.title = "Show only " + group;
+			chip.onclick = event => { event.stopPropagation(); $("filter").value = group; render(); };
+			chips.append(chip);
+		}
+		caption.append(chips);
+	}
+	const meta = document.createElement("div");
+	meta.className = "meta";
+	meta.textContent = time(item.addedAt);
+	caption.append(meta);
+	figure.append(thumb, caption);
+	figure.onclick = () => openAt(index);
+	return figure;
 }
 
 function openAt(index) {
@@ -129,8 +165,9 @@ function openAt(index) {
 	const item = state.shown[state.at];
 	state.fresh.delete(item.id);
 	$("big").src = "/items/" + encodeURIComponent(item.file);
+	$("title").textContent = label(item);
 	$("caption").textContent = item.caption || "";
-	$("meta").textContent = (state.at + 1) + " / " + state.shown.length + " · " + time(item.addedAt) + " · " + item.source;
+	$("meta").textContent = (state.at + 1) + " / " + state.shown.length + " · " + (item.groups || []).join(" · ") + (item.groups ? " · " : "") + time(item.addedAt) + " · " + item.source;
 	$("stage").classList.remove("actual");
 	$("viewer").classList.add("open");
 }

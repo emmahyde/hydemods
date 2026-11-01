@@ -3088,15 +3088,19 @@ export default function hydemods(pi: ExtensionAPI): void {
 		label: "Gallery",
 		description: [
 			"Shared picture gallery: a live web page beside the terminal. Push screenshots, renders, plots and generated images here instead of putting them in the chat; the user sees each one arrive at once.",
-			'op "push" (default) copies `paths` (local image files) or fetches `url`, with an optional `caption`; the first push opens the page when no tab shows it. "open" opens the page. "list" shows ids. "remove" deletes `id`. "clear" deletes everything.',
+			'op "push" (default) copies `paths` (local image files) or fetches `url`, each with its own title from `titles` (same order: paths, then url), plus an optional shared `caption` and `groups`; the first push opens the page when no tab shows it. "update" changes `title`, `caption` or `groups` of picture `id` (an empty value clears it). "open" opens the page. "list" shows ids. "remove" deletes `id`. "clear" deletes everything.',
+			"Titles name the one picture (e.g. \"k083 · Registry plates, line art\"); groups name the collections it belongs to, broadest first (e.g. [\"Captain allegiance grill\", \"Registry plates d006\"]). The page sections pictures by their first group.",
 			"Formats: png jpg gif webp svg avif bmp, up to 50 MB each. The gallery is per project and keeps pictures across sessions.",
 		].join("\n"),
 		parameters: Type.Object({
-			op: Type.Optional(Type.Union([Type.Literal("push"), Type.Literal("open"), Type.Literal("list"), Type.Literal("remove"), Type.Literal("clear")])),
+			op: Type.Optional(Type.Union([Type.Literal("push"), Type.Literal("update"), Type.Literal("open"), Type.Literal("list"), Type.Literal("remove"), Type.Literal("clear")])),
 			paths: Type.Optional(Type.Array(Type.String(), { description: "Image files to push, absolute or relative to the working directory." })),
 			url: Type.Optional(Type.String({ description: "Image URL to push." })),
+			titles: Type.Optional(Type.Array(Type.String(), { description: "push: one title per picture, in the order of paths, then url." })),
+			title: Type.Optional(Type.String({ description: "update: the picture's new title." })),
 			caption: Type.Optional(Type.String({ description: "What the picture shows; one sentence." })),
-			id: Type.Optional(Type.String({ description: "Picture id, for remove." })),
+			groups: Type.Optional(Type.Array(Type.String(), { description: "Collections the pictures belong to, broadest first." })),
+			id: Type.Optional(Type.String({ description: "Picture id, for update and remove." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { store, server } = await openGallery(ctx.cwd);
@@ -3108,7 +3112,13 @@ export default function hydemods(pi: ExtensionAPI): void {
 			}
 			if (op === "list") {
 				const { items } = store.read();
-				return reply(items.length ? items.map(item => `${item.id}  ${item.caption ?? item.source}`).join("\n") : `The gallery is empty. ${server.url}`);
+				return reply(items.length ? items.map(item => `${item.id}  ${item.title ?? item.source}${item.groups ? `  [${item.groups.join(", ")}]` : ""}${item.caption ? `  ${item.caption}` : ""}`).join("\n") : `The gallery is empty. ${server.url}`);
+			}
+			if (op === "update") {
+				if (!params.id) throw new Error("update needs id.");
+				const item = store.update(params.id, { title: params.title, caption: params.caption, groups: params.groups });
+				if (!item) throw new Error(`No picture ${params.id}. Use op "list".`);
+				return reply(`Updated ${item.id}: ${item.title ?? item.source}${item.groups ? ` [${item.groups.join(", ")}]` : ""}.`);
 			}
 			if (op === "remove") {
 				if (!params.id) throw new Error("remove needs id.");
@@ -3118,12 +3128,15 @@ export default function hydemods(pi: ExtensionAPI): void {
 			if (op === "clear") return reply(`Removed ${store.clear()} pictures.`);
 			const sources = [...(params.paths ?? []).map(path => ({ path })), ...(params.url ? [{ url: params.url }] : [])];
 			if (!sources.length) throw new Error("push needs paths or url.");
+			if (params.titles?.length !== sources.length || params.titles.some(title => !title.trim())) {
+				throw new Error(`push needs one title per picture: ${sources.length} picture${sources.length === 1 ? "" : "s"}, ${params.titles?.length ?? 0} title${params.titles?.length === 1 ? "" : "s"}.`);
+			}
 			const session = pi.getSessionName() ?? `Session ${ctx.sessionManager.getSessionId().slice(-8)}`;
 			const added: string[] = [];
 			const failed: string[] = [];
-			for (const source of sources) {
+			for (const [index, source] of sources.entries()) {
 				try {
-					added.push((await store.add({ ...source, caption: params.caption, session, cwd: ctx.cwd })).id);
+					added.push((await store.add({ ...source, title: params.titles[index], caption: params.caption, groups: params.groups, session, cwd: ctx.cwd })).id);
 				} catch (error) {
 					failed.push(error instanceof Error ? error.message : String(error));
 				}

@@ -40,6 +40,24 @@ test("push refuses files that are not images and paths that do not exist", async
 	expect(store.read().items).toEqual([]);
 });
 
+test("each picture keeps its own title; groups are trimmed and de-duplicated in order", async () => {
+	const { project, store } = setup();
+	const first = await store.add({ path: "shot.png", title: " k083 line art ", groups: [" Grill ", "Plates", "grill", ""], caption: "shared", cwd: project });
+	const second = await store.add({ path: "shot.png", title: "k084 painted", groups: ["Grill", "Plates"], caption: "shared", cwd: project });
+	expect(store.read().items.map(({ id, title, groups }) => ({ id, title, groups }))).toEqual([
+		{ id: first.id, title: "k083 line art", groups: ["Grill", "Plates"] },
+		{ id: second.id, title: "k084 painted", groups: ["Grill", "Plates"] },
+	]);
+});
+
+test("update changes only the labels it is given, and an empty value clears one", async () => {
+	const { project, store } = setup();
+	const item = await store.add({ path: "shot.png", title: "old", caption: "keep me", groups: ["A"], cwd: project });
+	expect(store.update(item.id, { title: "new", groups: [] })).toEqual(expect.objectContaining({ title: "new", caption: "keep me" }));
+	expect(store.read().items[0].groups).toBeUndefined();
+	expect(store.update("missing", { title: "x" })).toBeUndefined();
+});
+
 test("the page hears a push from any process as it happens", async () => {
 	const { project, store } = setup();
 	const server = await startGalleryServer(store, port());
