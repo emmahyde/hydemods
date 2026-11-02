@@ -76,6 +76,7 @@ import { galleryPort, galleryStore, startGalleryServer, type GalleryServer, type
 import { waitStatusLine } from "./lib/wait-status";
 import { agentModel, callModel, EFFORTS, type AgentModelParams, type CallModelParams } from "./lib/model-tools";
 import { COUNCIL_STEPS, runCouncil } from "./lib/council";
+import { DEFAULT_SLOTS, formatTally, loadPersonas, runHiCouncil, TRIADS } from "./lib/council-hi";
 import { type Candidate, formatRecommendations, RECOMMEND_MARKER, recommend, stripRecommendMarker, takeMarkedPrompts } from "./lib/recommend";
 import { journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -2739,26 +2740,69 @@ export default function hydemods(pi: ExtensionAPI): void {
 		role: Type.String({ description: 'e.g. "History Research Specialist".' }),
 		skills: Type.Array(Type.String()),
 	});
+	const personas = loadPersonas();
 	pi.registerTool({
 		name: "council",
 		label: "Council",
 		approval: "read",
 		description: [
-			"Answer one question with a two-member model council: a lead researcher and an analyst take five turns, each seeing the transcript so far.",
-			`Turns: ${COUNCIL_STEPS.join(" → ")}. Returns the lead's synthesis; details carry every turn.`,
-			"Costs five model calls. Figures come from model memory, not retrieval: verify any number you rely on.",
+			"Deliberate on one question with a model council. Two kinds:",
+			`(1) Persona council (Council of High Intelligence): pick \`members\` (${[...personas.keys()].join(", ")}), a \`triad\` (${Object.keys(TRIADS).join(", ")}), or \`all\`.`,
+			"Members are seated across model families (argon, astra, kimi, fable, opus; polarity pairs on different models). Full mode: independent analysis → anonymized cross-examination → final stance; quick mode: analysis → anonymized final stance.",
+			"A confidence-weighted tally (2/3 to carry) decides consensus, and a chairman model that did not deliberate writes the verdict. Costs members × rounds + 1 calls.",
+			`(2) Research council (no members/triad/all): a lead researcher and an analyst take five turns: ${COUNCIL_STEPS.join(" → ")}. Costs five calls.`,
+			"Figures come from model memory, not retrieval: verify any number you rely on.",
 		].join(" "),
 		parameters: Type.Object({
 			question: Type.String({ description: "The question for the council." }),
-			model: Type.Optional(Type.String({ description: "provider/id, bare id, or @role, optionally with :effort. Default @default." })),
+			members: Type.Optional(Type.Array(Type.String(), { description: "Persona ids, 2–18 (persona council)." })),
+			triad: Type.Optional(Type.String({ description: "Predefined triad domain (persona council)." })),
+			all: Type.Optional(Type.Boolean({ description: "Seat all 18 personas (persona council)." })),
+			mode: Type.Optional(Type.Union([Type.Literal("full"), Type.Literal("quick")], { description: 'Persona council rounds. Default "full".' })),
+			domain: Type.Optional(Type.String({ description: "Persona id whose seat carries 1.5× weight; choose it before seeing positions." })),
+			models: Type.Optional(Type.Array(Type.String(), { description: "Persona council: one model per slot, replacing the default families." })),
+			chairman: Type.Optional(Type.String({ description: "Persona council: chairman model. Default: a family with no seat, opus first." })),
+			model: Type.Optional(Type.String({ description: "Research council model: provider/id, bare id, or @role, optionally with :effort. Default @default." })),
 			lead: Type.Optional(memberSchema),
 			analyst: Type.Optional(memberSchema),
-			maxTokens: Type.Optional(Type.Number({ description: "Maximum output tokens per turn." })),
-			timeoutSec: Type.Optional(Type.Number({ description: "Stop before the next turn once this has passed. Default 300." })),
+			maxTokens: Type.Optional(Type.Number({ description: "Maximum output tokens per call." })),
+			timeoutSec: Type.Optional(Type.Number({ description: "Stop before the next round once this has passed. Default 300 (research) or 900 (persona)." })),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
-			const model = params.model ?? "@default";
 			const progress: string[] = [];
+			const report = (line: string) => {
+				progress.push(line);
+				onUpdate?.({ content: [{ type: "text" as const, text: progress.join("\n") }], details: undefined });
+			};
+			if (params.members || params.triad || params.all) {
+				const ids = params.all ? [...personas.keys()] : params.triad ? TRIADS[params.triad] : params.members!;
+				if (!ids) throw new Error(`Unknown triad "${params.triad}". Known: ${Object.keys(TRIADS).join(", ")}.`);
+				const unknown = ids.filter(id => !personas.has(id));
+				if (unknown.length) throw new Error(`Unknown member(s) ${unknown.join(", ")}. Known: ${[...personas.keys()].join(", ")}.`);
+				if (params.domain && !ids.includes(params.domain)) throw new Error(`domain "${params.domain}" is not on the panel.`);
+				const result = await runHiCouncil(
+					params.question,
+					(model, system, prompt) => callModel(ctx, { model, system, prompt, maxTokens: params.maxTokens }, signal).then(r => ({ text: r.text, model: r.details.model })),
+					{
+						members: ids.map(id => personas.get(id)!),
+						mode: params.mode ?? "full",
+						domainSeat: params.domain,
+						slots: params.models?.map(m => [m]) ?? DEFAULT_SLOTS,
+						chairman: params.chairman,
+						timeoutMs: (params.timeoutSec ?? 900) * 1000,
+						onProgress: report,
+					},
+				);
+				const footer = [
+					"",
+					"---",
+					`Routing: ${result.routing.map(r => `${r.member} → ${r.model}`).join("; ")}. Chairman: ${result.chairman}.`,
+					result.fallbacks.length ? `Fallbacks: ${result.fallbacks.join("; ")}` : "Fallbacks: none.",
+					`Tally:\n${formatTally(result.tally)}`,
+				].join("\n");
+				return { content: [{ type: "text" as const, text: result.verdict + footer }], details: result };
+			}
+			const model = params.model ?? "@default";
 			const { answer, turns } = await runCouncil(
 				params.question,
 				(system, prompt) => callModel(ctx, { model, system, prompt, maxTokens: params.maxTokens }, signal).then(r => r.text),
@@ -2766,10 +2810,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 					lead: params.lead,
 					analyst: params.analyst,
 					timeoutMs: (params.timeoutSec ?? 300) * 1000,
-					onTurn: (turn, index, total) => {
-						progress.push(`${index + 1}/${total} ${turn.member}: ${turn.step}`);
-						onUpdate?.({ content: [{ type: "text" as const, text: progress.join("\n") }], details: undefined });
-					},
+					onTurn: (turn, index, total) => report(`${index + 1}/${total} ${turn.member}: ${turn.step}`),
 				},
 			);
 			return { content: [{ type: "text" as const, text: answer }], details: { model, turns } };
