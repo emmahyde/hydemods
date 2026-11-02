@@ -695,9 +695,7 @@ export class LineCache {
    this.active = undefined;
    if (generation === this.generation) {
     this.remember(entry.key, line ?? null);
-    if (line) {
-     try { this.onReady(); } catch { /* A failed repaint must not reject background work. */ }
-    }
+    try { this.onReady(); } catch { /* A failed repaint must not reject background work. */ }
    }
    this.drain();
   }

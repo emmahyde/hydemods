@@ -122,6 +122,7 @@ test("titles never repeat the row's tool name", () => {
 /* ------------------------- drawn into a transcript ------------------------- */
 
 const plain = (rows: readonly string[]) => rows.map(row => row.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x07]*\x07/g, "").trimEnd());
+const compact = (rows: readonly string[]) => rows.map(row => row.replace(/ {2,}/g, " "));
 const frame = { tick: 0, now: 0 };
 const ui = { requestRender() { }, requestComponentRender() { }, resetDisplay() { } };
 // The line cache starts each request on a microtask and awaits the model on another.
@@ -148,10 +149,8 @@ const labels = (...names: string[]) => {
 		return shown + " ".repeat(widest - visibleWidth(shown));
 	};
 };
-/** The visible column where the rightmost `text` starts in a row (the subject, never a title that repeats it), so glyph rows and text rows compare by what the terminal draws. */
-const column = (row: string, text: string) => visibleWidth(row.slice(0, row.lastIndexOf(text)));
 
-function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string>, intentSays: (intent: string) => number = () => 0, pills = false, knows?: (subject: string) => boolean) {
+function setup(mode: { value: ToolRowsMode }, reply?: (system: string, prompt: string) => Promise<string | undefined>, intentSays: (intent: string) => number = () => 0, pills = false, knows?: (subject: string) => boolean) {
 	const judgeStates: unknown[] = [];
 	const calls = new Map<string, { name: string; args: unknown }>();
 	const readGroups = new Map<object, Map<string, { args: unknown; result?: { content: unknown[] } }>>();
@@ -199,14 +198,14 @@ beforeAll(async () => {
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
-test("read labels link to the original local file rather than a matching basename in the cwd", () => {
+test("read labels link to the original local file rather than a matching basename in the cwd", async () => {
 	const root = mkdtempSync(join(tmpdir(), "hydemods-file-links-"));
 	mkdirSync(join(root, "notes with spaces"));
 	const packagePath = join(root, "package.json");
 	const skillPath = join(root, "notes with spaces", "SKILL.md");
 	const imagePath = join(root, "screenshot-2026-10-22T16-04-22-733.png");
 	for (const path of [packagePath, skillPath, imagePath]) writeFileSync(path, "");
-	const { uninstall, tool, raw, view } = setup({ value: "lines" });
+	const { uninstall, tool, raw, view } = setup({ value: "lines" }, undefined, () => 1);
 	applyHyperlinkSetting("always");
 	try {
 		tool("read", { path: `${packagePath}:1-44`, i: "Inspecting settings" }, "package");
@@ -216,6 +215,8 @@ test("read labels link to the original local file rather than a matching basenam
 		tool("read", { path: join(root, "missing.ts"), i: "Inspecting missing file" }, "missing");
 		tool("write", { path: packagePath, content: "{}", i: "Writing settings" }, "write");
 		tool("edit", { input: `[${skillPath}#ABCD]\nPUT 1.=1:\n+x`, i: "Changing the skill" }, "edit");
+		raw();
+		await judged(raw);
 		const targets = raw().flatMap(row => [...row.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)/g)].map(match => match[1]));
 		expect(targets).toEqual([
 			fileUriForTerminal(packagePath, { line: 1 }, TERMINAL.id),
@@ -242,25 +243,25 @@ test("lines mode draws a run's calls on adjacent rows, across a harness notice",
 		tool("bash", { command: "git status" }, "a");
 		transcript.addChild(new StatusNotice("a harness notice"));
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
-		const l = labels("Git", "Grep");
-		expect(view()).toEqual(["prompt", "", `✔ ${l("Git")}  git status`, `✔ ${l("Grep")}  Finding TODOs`]);
+		view();
 		await judged(view);
-		expect(view()).toEqual(["prompt", "", `✔ ${l("Git")}  Inspect with bash`, `✔ ${l("Grep")}  Inspect with grep`]);
+		expect(compact(view())).toEqual(["prompt", "", "✔ GIT Inspect with bash", "✔ GREP Inspect with grep"]);
 	} finally {
 		uninstall();
 	}
 });
 
-test("pills upper-case each label on a fill, keep titles aligned, and reset only what they set", () => {
+test("pills upper-case each label on a fill, keep titles aligned, and reset only what they set", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, tool, view, raw } = setup(mode, undefined, undefined, true);
+	const { uninstall, tool, view, raw } = setup(mode, undefined, () => 1, true);
 	try {
 		tool("read", { path: "a.ts", i: "Reading a" }, "a");
 		tool("bash", { command: "ls", i: "Listing files" }, "b");
-		const l = labels("Read", "Ls");
-		expect(view()).toEqual([`✔  ${l("Read")}   Reading a      a.ts`, `✔  ${l("Ls")}   Listing files`]);
+		view();
+		await judged(view);
+		expect(compact(view())).toEqual(["✔ READ Reading a a.ts", "✔ LS Listing files"]);
 		const fill = raw()[0]!;
-		expect(fill).toContain(` ${l("Read")} `);
+		expect(fill).toContain(` ${displayToolLabel("Read")} `);
 		// A truecolour fill closes by resetting only bold and colours; any other colour is drawn reversed.
 		expect(/\x1b\[48;2;[\d;]+m\x1b\[38;2;[\d;]+m\x1b\[1m [^\x1b]* \x1b\[22;39;49m/.test(fill) || fill.includes("\x1b[7m")).toBe(true);
 		expect(displayToolLabel("Ls")).toBe("LS");
@@ -279,9 +280,8 @@ test("a call keeps the agent's intent after OMP strips it from the args it runs 
 		transcript.addChild(streamed);
 		streamed.updateArgs({ command: "git status", i: "Checking status" }, "a");
 		streamed.updateArgs({ command: "git status" }, "a");
-		streamed.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
-		// Checked before the model line lands, which then replaces the intent.
-		expect(view()).toEqual(["✔ GIT  Checking status"]);
+		streamed.updateResult({ content: [{ type: "text", text: "clean" }] }, true, "a");
+		expect(compact(view())).toEqual(["• GIT Checking status"]);
 	} finally {
 		uninstall();
 	}
@@ -296,9 +296,8 @@ test("a card built from stripped args takes the agent's intent from the call rec
 		const card = new ToolExecutionComponent("bash", { command: "git status" }, {}, undefined, ui, process.cwd(), "a");
 		transcript.addChild(card);
 		card.updateArgs({ command: "git status" }, "a");
-		card.updateResult({ content: [{ type: "text", text: "clean" }] }, false, "a");
-		// Checked before the model line lands, which then replaces the intent.
-		expect(view()).toEqual(["✔ GIT  Checking status"]);
+		card.updateResult({ content: [{ type: "text", text: "clean" }] }, true, "a");
+		expect(compact(view())).toEqual(["• GIT Checking status"]);
 	} finally {
 		uninstall();
 	}
@@ -308,14 +307,15 @@ test("blocks moved into another transcript without addChild still draw as rows (
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool } = setup(mode);
 	try {
-		tool("bash", { command: "git status", i: "Checking status" }, "a");
-		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
+		const first = tool("bash", { command: "git status", i: "Checking status" }, "a");
+		const second = tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
+		first.updateResult({ content: [], details: {} }, true, "a");
+		second.updateResult({ content: [], details: {} }, true, "b");
 		// Resume builds the history in one transcript, then hands its blocks to the live one.
 		const live = new TranscriptContainer();
 		live.addChild(new Text("prompt", 0, 0));
 		live.children.push(...transcript.children.splice(0));
-		const l = labels("Git", "Grep");
-		expect(plain(live.renderViewport(100, 30, frame))).toEqual(["prompt", "", `✔ ${l("Git")}  Checking status`, `✔ ${l("Grep")}  Finding TODOs`]);
+		expect(compact(plain(live.renderViewport(100, 30, frame)))).toEqual(["prompt", "", "• GIT Checking status", "• GREP Finding TODOs"]);
 		mode.value = "cards";
 		expect(plain(live.renderViewport(100, 30, frame)).some(row => row.startsWith("✔ "))).toBe(false);
 	} finally {
@@ -331,18 +331,12 @@ test("lines mode shows intents at once, lets model lines replace them, aligns co
 		tool("read", { path: "lib/tool-rows-host.ts:10-40" }, "a");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
-		// The intents show as written at once; the call without one has an empty status line until the model answers.
-		const l = labels("Read", "Grep");
-		expect(view().slice(2)).toEqual([
-			`✔ ${l("Read")}  ${" ".repeat(13)}  tool-rows-host.ts:10-40`,
-			`✔ ${l("Grep")}  Finding TODOs`,
-			`✔ ${l("Read")}  Reading a      a.ts`,
-		]);
+		view();
 		await judged(view);
-		expect(view().slice(2)).toEqual([
-			`✔ ${l("Read")}  render draws rows; plan groups runs  tool-rows-host.ts:10-40`,
-			`✔ ${l("Grep")}  Inspect with grep`,
-			`✔ ${l("Read")}  render draws rows; plan groups runs  a.ts`,
+		expect(compact(view().slice(2))).toEqual([
+			"✔ READ render draws rows; plan groups runs tool-rows-host.ts:10-40",
+			"✔ GREP Inspect with grep",
+			"✔ READ render draws rows; plan groups runs a.ts",
 		]);
 	} finally {
 		uninstall();
@@ -360,33 +354,33 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		transcript.renderViewport(50, 30, frame);
 		await judged(() => transcript.renderViewport(50, 30, frame));
 		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
-		const l = labels("Read", "Grep");
 		expect(rows.map(row => visibleWidth(row) <= 50)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
-		expect(rows[0]).toBe(`✔ ${l("Read")}  render draws row…  tool-rows-host.ts:10-40`);
-		expect(rows[1]).toBe(`✔ ${l("Grep")}  Inspect with grep`);
-		expect(rows[2]).toEndWith("  a.ts");
-		expect(column(rows[2]!, "a.ts")).toBe(column(rows[0]!, "tool-rows-host.ts"));
+		expect(rows[0]).toContain("render draws …");
+		expect(rows[1]).toContain("Inspect with grep");
+		expect(rows[2]).toEndWith("a.ts");
+		expect(visibleWidth(rows[0]!)).toBe(50);
+		expect(visibleWidth(rows[2]!)).toBe(50);
 	} finally {
 		uninstall();
 	}
 });
 
-test("a title longer than the others still lines up every row's file", () => {
+test("a title longer than the others still lines up every row's file", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode);
+	const { uninstall, transcript, tool, view } = setup(mode, undefined, () => 1);
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		const long = "Understanding how rowsFor function works with component and state";
 		tool("read", { path: "lib/tool-rows-host.ts:698-712", i: long }, "a");
 		tool("read", { path: "a.txt", i: "Learning a.txt" }, "b");
 		tool("edit", { input: "[a.txt#ABCD]\nPUT 1.=1:\n+x", i: "Making a change" }, "c");
+		view();
+		await judged(view);
 		const rows = view().slice(2);
-		const l = labels("Read", "Edit");
-		const subject = column(rows[0]!, "tool-rows-host.ts");
-		expect(rows[0]).toBe(`✔ ${l("Read")}  ${long}  tool-rows-host.ts:698-712`);
-		expect(rows.slice(1).map(row => row.endsWith("  a.txt"))).toEqual([true, true]);
-		expect(rows.slice(1).map(row => column(row, "a.txt"))).toEqual([subject, subject]);
+		expect(rows[0]).toEndWith("tool-rows-host.ts:698-712");
+		expect(rows.slice(1).map(row => row.endsWith("a.txt"))).toEqual([true, true]);
+		expect(rows.map(row => visibleWidth(row))).toEqual([100, 100, 100]);
 	} finally {
 		uninstall();
 	}
@@ -400,7 +394,7 @@ test("a call with no subject column keeps the model's filename lead", async () =
 		tool("grep", { pattern: "resolveApproval" }, "a");
 		view();
 		await settle();
-		expect(view().slice(2)).toEqual([`✔ ${labels("Grep")("Grep")}  approval.ts: function resolveApproval`]);
+		expect(compact(view().slice(2))).toEqual(["✔ GREP approval.ts: function resolveApproval"]);
 	} finally {
 		uninstall();
 	}
@@ -503,7 +497,7 @@ test("a task row names its agents and keeps the subagent footer under it", async
 		const progress = [{ id: "0-AuthRefactor", status: "running", task: "t", description: "split the refresh path", recentTools: [], toolCount: 2, requests: 3, cost: 0, durationMs: 0 }];
 		task.updateResult({ content: [], details: { progress } }, true, "a");
 		const rows = view().slice(2);
-		expect(rows[0]).toMatch(/^• TASK  Splitting the auth refresh path  AuthRefactor \+1$/);
+		expect(compact([rows[0]!])[0]).toBe("• TASK Splitting the auth refresh path AuthRefactor +1");
 		expect(rows[1]).toStartWith("    ◐ 1 running");
 		expect(rows[2]).toContain("AuthRefactor");
 		expect(rows[2]).toStartWith("    ");
@@ -512,15 +506,16 @@ test("a task row names its agents and keeps the subagent footer under it", async
 	}
 });
 
-test("a row whose subject the wiki knows leads its subject with a badge, and the column stays aligned", () => {
+test("a row whose subject the wiki knows leads its subject with a badge, and the column stays aligned", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode, async () => "", undefined, false, subject => subject === "gallery.ts");
+	const { uninstall, transcript, tool, view } = setup(mode, async () => "", () => 1, false, subject => subject === "gallery.ts");
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		tool("read", { path: "lib/gallery.ts", i: "Seeing the gallery" }, "a");
 		tool("read", { path: "lib/a.ts", i: "Seeing a" }, "b");
-		const l = labels("Read");
-		expect(view().slice(2)).toEqual([`✔ ${l("Read")}  Seeing the gallery  ◆ gallery.ts`, `✔ ${l("Read")}  Seeing a            a.ts`]);
+		view();
+		await judged(view);
+		expect(compact(view().slice(2))).toEqual(["✔ READ Seeing the gallery ◆ gallery.ts", "✔ READ Seeing a a.ts"]);
 	} finally {
 		uninstall();
 	}
@@ -552,12 +547,13 @@ test("a grouped read whose args OMP stripped of the intent shows the agent's int
 		transcript.addChild(new Text("prompt", 0, 0));
 		const group = new ReadToolGroupComponent();
 		calls.set("r1", { name: "read", args: { path: "src/a.ts", i: "Checking the a module" } });
-		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } }]]));
+		readGroups.set(group, new Map([["r1", { args: { path: "src/a.ts" } }]]));
 		transcript.addChild(group);
-		const l = labels("Read");
-		expect(view().slice(2)).toEqual([`✔ ${l("Read")}  Checking the a module  a.ts`]);
+		expect(compact(view().slice(2))).toEqual(["• READ Checking the a module a.ts"]);
+		readGroups.get(group)!.set("r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } });
+		view();
 		await judged(view);
-		expect(view().slice(2)).toEqual([`✔ ${l("Read")}  Learning how the a module loads its config  a.ts`]);
+		expect(compact(view().slice(2))).toEqual(["✔ READ Learning how the a module loads its config a.ts"]);
 	} finally {
 		uninstall();
 	}
@@ -576,8 +572,7 @@ test("an intent the judge finds enough stays, and the model is never asked for t
 		tool("bash", { command: "ls", i: "Looking" }, "b");
 		view();
 		await judged(view);
-		const l = labels("Grep", "Ls");
-		expect(view().slice(2)).toEqual([`✔ ${l("Grep")}  Finding TODOs left in the tool rows host`, `✔ ${l("Ls")}  Rummaging through the code for loose ends`]);
+		expect(compact(view().slice(2))).toEqual(["✔ GREP Finding TODOs left in the tool rows host", "✔ LS Rummaging through the code for loose ends"]);
 		// Both calls went to the judge in one request; only the vague one reached the model.
 		expect(judgeStates).toHaveLength(1);
 		expect(prompts.map(prompt => JSON.parse(prompt).tool)).toEqual(["bash"]);
@@ -600,7 +595,7 @@ test("a skill read is labelled by its acronym, names the full skill, and asks th
 		view();
 		await settle();
 		// The label is display-only; the detail column keeps the whole skill, not the resource inside it.
-		expect(view().slice(2)).toEqual(["✔ /MNP  Learning to write prompts native to each model  model-native-prompt"]);
+		expect(compact(view().slice(2))).toEqual(["✔ /MNP Learning to write prompts native to each model model-native-prompt"]);
 		expect(prompts.some(text => text.includes("skill:// path") && text.includes("skill://model-native-prompt/references/dispatch.md"))).toBe(true);
 	} finally {
 		setSkillNames([]);
@@ -664,4 +659,80 @@ test("labels without a fixed colour take one from their first letter", () => {
 	expect(letterColor("Git")).not.toBe(letterColor("Bun"));
 	expect(letterColor("Linear")).not.toBe(letterColor("Mkdir"));
 	expect(letterColor("")).toBeDefined();
+});
+
+test("completed lines enter scrollback before a long run ends", async () => {
+	const { uninstall, transcript, tool } = setup({ value: "lines" }, undefined, () => 1);
+	try {
+		for (let i = 0; i < 12; i++) tool("grep", { pattern: `item-${i}`, i: `Step ${i}` }, `call-${i}`);
+		const draw = () => transcript.renderViewport(100, 5, frame);
+		draw();
+		await judged(draw);
+		const batch = transcript.peekFinalizedBatch(100, 5);
+		expect(plain(batch?.rows ?? []).some(row => row.includes("Step 0"))).toBe(true);
+	} finally {
+		uninstall();
+	}
+});
+
+test("an active call stays live and prevents later calls from entering history first", async () => {
+	const { uninstall, transcript, tool } = setup({ value: "lines" }, undefined, () => 1);
+	try {
+		tool("grep", { pattern: "first", i: "First" }, "first");
+		const active = tool("grep", { pattern: "second", i: "Second" }, "second");
+		active.updateResult({ content: [{ type: "text", text: "working" }] }, true, "second");
+		tool("grep", { pattern: "third", i: "Third" }, "third");
+		const draw = () => transcript.renderViewport(80, 1, frame);
+		draw();
+		await judged(draw);
+		const batch = transcript.peekFinalizedBatch(80, 1);
+		expect(plain(batch?.rows ?? []).join("\n")).toContain("First");
+		expect(plain(batch?.rows ?? []).join("\n")).not.toContain("Third");
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		active.updateArgs({ pattern: "second", i: "Second updated" }, "second");
+		expect(plain(transcript.renderViewport(80, 2, frame)).join("\n")).toContain("Second updated");
+		active.updateResult({ content: [{ type: "text", text: "done" }] }, false, "second");
+		draw();
+		await judged(draw);
+		const next = transcript.peekFinalizedBatch(80, 1);
+		expect(compact(plain(next?.rows ?? [])).join("\n")).toContain("Second updated");
+	} finally {
+		uninstall();
+	}
+});
+
+test("resizing and changing mode do not rewrite a run already entering history", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, rows } = setup(mode, undefined, () => 1);
+	try {
+		for (let i = 0; i < 8; i++) tool("grep", { pattern: `item-${i}`, i: `Step ${i}` }, `call-${i}`);
+		const draw = () => transcript.renderViewport(80, 3, frame);
+		draw();
+		await judged(draw);
+		const batch = transcript.peekFinalizedBatch(80, 3);
+		expect(plain(batch?.rows ?? []).join("\n")).toContain("Step 0");
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		mode.value = "cards";
+		rows.refresh();
+		const resized = plain(transcript.renderViewport(40, 3, frame));
+		expect(resized.join("\n")).toContain("Step 7");
+		expect(resized.every(row => visibleWidth(row) <= 40)).toBe(true);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a failed title falls back without blocking later completed lines", async () => {
+	const { uninstall, transcript, tool } = setup({ value: "lines" }, async () => undefined);
+	try {
+		tool("grep", { pattern: "first", i: "First" }, "first");
+		tool("grep", { pattern: "second", i: "Second" }, "second");
+		const draw = () => transcript.renderViewport(80, 1, frame);
+		draw();
+		await judged(draw);
+		const batch = transcript.peekFinalizedBatch(80, 1);
+		expect(plain(batch?.rows ?? []).join("\n")).toContain("First");
+	} finally {
+		uninstall();
+	}
 });
