@@ -236,16 +236,20 @@ export async function runHiCouncil(question: string, complete: Complete, options
 	const fallbacks: string[] = [];
 	const rounds: HiCouncilResult["rounds"] = [];
 	const served = new Map<string, string>();
+	/** Models that failed once are skipped for the rest of the session, so a lapsed login costs one call. */
+	const dead = new Set<string>();
 
 	const ask = async (models: string[], who: string, sys: string, prompt: string) => {
 		let last: unknown;
 		for (const model of models) {
+			if (dead.has(model) && model !== models.at(-1)) continue;
 			try {
 				const reply = await complete(model, sys, prompt);
-				if (model !== models[0]) fallbacks.push(`${who}: ${models[0]} → ${model} (${String(last instanceof Error ? last.message : last).slice(0, 120)})`);
+				if (model !== models[0] && !fallbacks.some(f => f.startsWith(`${who}: `))) fallbacks.push(`${who}: ${models[0]} → ${model} (${String(last instanceof Error ? last.message : last ?? "failed earlier").slice(0, 120)})`);
 				return reply;
 			} catch (error) {
 				last = error;
+				dead.add(model);
 			}
 		}
 		throw new Error(`${who}: every model in its slot failed (${models.join(", ")}): ${last instanceof Error ? last.message : String(last)}`);
