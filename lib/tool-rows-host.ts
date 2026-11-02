@@ -45,6 +45,9 @@ import { formatToolLine } from "./tool-line-layout";
  * blocks, and the harness notices between them, draw nothing. The transcript puts a blank row
  * between blocks, so this is the only way calls sit on adjacent rows. In lines mode the head
  * publishes completed titles as an append-only prefix. Group mode holds the head until the run closes.
+ * Once content follows a closed run, the head stops waiting for queued titles after a short grace
+ * and publishes the calls with the best text it has, so rows never land in a block the transcript
+ * has already moved past.
  *
  * Everything is patched per instance when a block joins a transcript, delegating to whatever the
  * prototype holds at call time, so other hydemods wrappers on the same prototypes keep working.
@@ -124,6 +127,8 @@ interface RunView {
 	tools: Component[];
 	quiet: Component[];
 	closed: boolean;
+	/** Nothing follows the run in the transcript: the head is the live edge and may keep waiting for titles. */
+	tail: boolean;
 }
 
 type Role = { kind: "head"; run: RunView } | { kind: "member"; head: Component } | { kind: "hidden"; head: Component };
@@ -583,7 +588,12 @@ export class ToolRows {
 		const runs = planRuns(span.map(child => this.classify(child, this.width)), this.idle);
 		for (const run of runs) {
 			const head = span[run.head]!;
-			const view: RunView = { tools: run.tools.map(index => span[index]!), quiet: run.quiet.map(index => span[index]!), closed: run.closed };
+			const view: RunView = {
+				tools: run.tools.map(index => span[index]!),
+				quiet: run.quiet.map(index => span[index]!),
+				closed: run.closed,
+				tail: Math.max(...run.tools, ...run.quiet) + 1 >= span.length,
+			};
 			roles.set(head, { kind: "head", run: view });
 			for (const member of view.tools) if (member !== head) roles.set(member, { kind: "member", head });
 			for (const quiet of view.quiet) roles.set(quiet, { kind: "hidden", head });
@@ -618,13 +628,13 @@ export class ToolRows {
 	}
 
 	/** The run a tool block draws, or `null` when it draws nothing; undefined leaves the native card. */
-	private runFor(component: Component, state: BlockState): { tools: Component[]; closed: boolean; closedAt?: number } | null | undefined {
+	private runFor(component: Component, state: BlockState): { tools: Component[]; closed: boolean; closedAt?: number; tail: boolean } | null | undefined {
 		if (state.owner) return null;
-		if (state.frozen) return { tools: state.frozen.tools, closed: true, closedAt: state.frozen.closedAt };
+		if (state.frozen) return { tools: state.frozen.tools, closed: true, closedAt: state.frozen.closedAt, tail: false };
 		const role = this.roleOf(component);
-		if (!role) return state.committed ? { tools: [component], closed: true, closedAt: 0 } : undefined;
+		if (!role) return state.committed ? { tools: [component], closed: true, closedAt: 0, tail: false } : undefined;
 		if (role.kind !== "head") return null;
-		return { tools: role.run.tools, closed: role.run.closed, closedAt: state.closedAt };
+		return { tools: role.run.tools, closed: role.run.closed, closedAt: state.closedAt, tail: role.run.tail };
 	}
 
 	private commit(component: Component, state: BlockState): void {
@@ -776,7 +786,13 @@ export class ToolRows {
 			return asked === undefined || now - asked >= HoldMs;
 		}
 		if (state.stableLines && (this.host.mode() === "lines" || state.stableLines.length > 0)) {
-			return calls.every(call => this.titleReady(call));
+			if (run.tail) return calls.every(call => this.titleReady(call));
+			// Content follows the run: waiting for queued titles would append rows to a block the
+			// transcript has already moved past. Grace briefly, then publish the best text so far.
+			if (calls.some(call => this.running(call))) return false;
+			if (now - (run.closedAt ?? now) < HoldMs && !calls.every(call => this.titleReady(call))) return false;
+			this.publishStable(state, calls, calls.map(call => this.title(call, (state.stableLines?.length ?? 0) > 0)), this.host.theme(), true);
+			return true;
 		}
 		return calls.every(call => this.lineSettled(call, now));
 	}
@@ -807,12 +823,15 @@ export class ToolRows {
 		]);
 	}
 
-	private lineRows(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], width: number): string[] {
-		const stable = state.stableLines!;
-		const theme = this.host.theme();
+	/** Publishes completed calls onto the append-only prefix: titles that are ready, or — when a flush
+	 * closes a run the transcript has moved past — every settled call with the best text so far. */
+	private publishStable(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], theme: Theme, flush: boolean): void {
+		const stable = state.stableLines;
+		if (!stable) return;
 		for (let index = stable.length; index < calls.length; index++) {
 			const call = calls[index]!;
-			if (!this.titleReady(call)) break;
+			if (this.running(call)) break;
+			if (!flush && !this.titleReady(call)) break;
 			const prefix = `${this.glyph(call, theme)} ${this.label(call, theme)}`;
 			const title = this.body(titles[index]!, theme);
 			const subject = callSubject(call.name ?? "", call.args);
@@ -831,6 +850,12 @@ export class ToolRows {
 				},
 			});
 		}
+	}
+
+	private lineRows(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], width: number): string[] {
+		const stable = state.stableLines!;
+		const theme = this.host.theme();
+		this.publishStable(state, calls, titles, theme, false);
 		return [
 			...stable.flatMap(line => line.render(width)),
 			...calls.slice(stable.length).flatMap((call, offset) => {

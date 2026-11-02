@@ -343,6 +343,40 @@ test("lines mode shows intents at once, lets model lines replace them, aligns co
 	}
 });
 
+test("a closed run with content after it stops waiting for model lines and publishes its calls with intents", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, view } = setup(mode, async () => new Promise(() => {}));
+	try {
+		const head = tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "g1");
+		tool("bash", { command: "git status", i: "Checking status" }, "b1");
+		view();
+		expect(head.isTranscriptBlockFinalized()).toBe(false);
+		// The reply closes the run; within the grace the head still waits for queued titles.
+		transcript.addChild(new Text("reply", 0, 0));
+		expect(head.isTranscriptBlockFinalized()).toBe(false);
+		vi.advanceTimersByTime(4_000);
+		expect(head.isTranscriptBlockFinalized()).toBe(true);
+		expect(compact(view())).toEqual(["✔ GREP Finding TODOs", "✔ GIT Checking status", "", "reply"]);
+	} finally {
+		uninstall();
+	}
+});
+
+test("a run still at the transcript's tail keeps waiting for its model titles", async () => {
+	const mode = { value: "lines" as ToolRowsMode };
+	const { uninstall, transcript, tool, rows } = setup(mode, async () => new Promise(() => {}));
+	try {
+		const head = tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "g1");
+		rows.setIdle(true);
+		expect(head.isTranscriptBlockFinalized()).toBe(false);
+		vi.advanceTimersByTime(60_000);
+		// Still waiting: the tail may hold the run open for its queued titles, so nothing flushes.
+		expect(head.isTranscriptBlockFinalized()).toBe(false);
+	} finally {
+		uninstall();
+	}
+});
+
 test("a narrow pane cuts the status line, so the run's files stay on screen and aligned", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
 	const { uninstall, transcript, tool } = setup(mode);

@@ -26,6 +26,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
 - **Tool rows.** `hydemods.toolRows` in `/settings` (Tools) picks how tool calls draw; Ctrl+N cycles it (cards → lines → group) and flashes which one is on. Ctrl+O shows the full cards in any mode.
   - `lines`: one row per call, on adjacent rows with no gap. The tool column uses nine terminal cells. File links align to the right edge. A long title is shortened before its file link.
   - A running call shows its current command or intent. Completed calls wait for their final titles, then enter scrollback in order. The local model writes titles one at a time. If it cannot write one, the row keeps its fallback text.
+  - A closed run stops waiting once newer content follows it: after four seconds the block publishes the calls left with their intents, so rows never appear in a block the conversation has moved past.
   - Each tool has its own label colour. A bash row names the program it runs, past any leading `cd dir &&`. A `git commit -m` fallback shows only the commit message.
   - A mode change applies to the next run if the current run has published completed titles.
   - Read file labels link to the original local path, not a file with the same name in the working directory. Cmd+click opens the file. Line selectors stay visible; VS Code links also retain the start line. Links follow `tui.hyperlinks`. Missing files stay plain text.
