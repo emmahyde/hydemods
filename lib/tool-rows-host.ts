@@ -41,13 +41,9 @@ import { createPathResolver } from "./path-links";
 import { formatToolLine } from "./tool-line-layout";
 
 /*
- * Tool rows draw a run of consecutive tool calls from its first block (the head); the run's other
- * blocks, and the harness notices between them, draw nothing. The transcript puts a blank row
- * between blocks, so this is the only way calls sit on adjacent rows. In lines mode the head
- * publishes completed titles as an append-only prefix. Group mode holds the head until the run closes.
- * Once content follows a closed run, the head stops waiting for queued titles after a short grace
- * and publishes the calls with the best text it has, so rows never land in a block the transcript
- * has already moved past.
+ * Tool rows draw each consecutive run from its first block (the head). Visible notices split runs
+ * so they retain their place. In lines mode completed calls become immutable rows immediately;
+ * only the contiguous completed prefix can enter scrollback before the run closes.
  *
  * Everything is patched per instance when a block joins a transcript, delegating to whatever the
  * prototype holds at call time, so other hydemods wrappers on the same prototypes keep working.
@@ -121,14 +117,13 @@ interface BlockState {
 	/** Rows epoch folded into the block version; frozen once the block is in scrollback. */
 	epoch: number;
 	stableLines?: StableToolLine[];
+	pendingLines?: Map<string, StableToolLine>;
 }
 
 interface RunView {
 	tools: Component[];
 	quiet: Component[];
 	closed: boolean;
-	/** Nothing follows the run in the transcript: the head is the live edge and may keep waiting for titles. */
-	tail: boolean;
 }
 
 type Role = { kind: "head"; run: RunView } | { kind: "member"; head: Component } | { kind: "hidden"; head: Component };
@@ -557,7 +552,10 @@ export class ToolRows {
 	private classify(component: Component, width: number): RunItem {
 		const state = stateOf(component);
 		if (state?.kind === "tool" || state?.kind === "reads") return "tool";
-		if (state?.kind === "harness") return "quiet";
+		if (state?.kind === "harness") {
+			const render = Reflect.get(Object.getPrototypeOf(component), "render");
+			return typeof render === "function" && trimmedRows(Reflect.apply(render, component, [width])) > 0 ? "break" : "quiet";
+		}
 		if (state?.kind === "assistant") {
 			if (state.hasText === undefined) {
 				// Built from history: invalidate() replays its message through updateContent.
@@ -592,7 +590,6 @@ export class ToolRows {
 				tools: run.tools.map(index => span[index]!),
 				quiet: run.quiet.map(index => span[index]!),
 				closed: run.closed,
-				tail: Math.max(...run.tools, ...run.quiet) + 1 >= span.length,
 			};
 			roles.set(head, { kind: "head", run: view });
 			for (const member of view.tools) if (member !== head) roles.set(member, { kind: "member", head });
@@ -628,13 +625,13 @@ export class ToolRows {
 	}
 
 	/** The run a tool block draws, or `null` when it draws nothing; undefined leaves the native card. */
-	private runFor(component: Component, state: BlockState): { tools: Component[]; closed: boolean; closedAt?: number; tail: boolean } | null | undefined {
+	private runFor(component: Component, state: BlockState): { tools: Component[]; closed: boolean; closedAt?: number } | null | undefined {
 		if (state.owner) return null;
-		if (state.frozen) return { tools: state.frozen.tools, closed: true, closedAt: state.frozen.closedAt, tail: false };
+		if (state.frozen) return { tools: state.frozen.tools, closed: true, closedAt: state.frozen.closedAt };
 		const role = this.roleOf(component);
-		if (!role) return state.committed ? { tools: [component], closed: true, closedAt: 0, tail: false } : undefined;
+		if (!role) return state.committed ? { tools: [component], closed: true, closedAt: 0 } : undefined;
 		if (role.kind !== "head") return null;
-		return { tools: role.run.tools, closed: role.run.closed, closedAt: state.closedAt, tail: role.run.tail };
+		return { tools: role.run.tools, closed: role.run.closed, closedAt: state.closedAt };
 	}
 
 	private commit(component: Component, state: BlockState): void {
@@ -705,10 +702,7 @@ export class ToolRows {
 		return fallbackLine({ i: record?.i }, MaxFullLineLength);
 	}
 
-	/**
-	 * The title request for `call`, or undefined when none is asked. Every call asks, even one with an
-	 * intent: the intent shows at once and the model line replaces it when it lands. A read waits for its output.
-	 */
+	/** A read needs its output before its title can describe it. */
 	private callText(call: CallState): CallText | undefined {
 		if (!call.name || call.args === undefined) return undefined;
 		const earlier = call.earlier?.length ? { earlier: call.earlier } : {};
@@ -722,22 +716,16 @@ export class ToolRows {
 		return text && `call:${callPrompt(text)}`;
 	}
 
-	/**
-	 * The call's title without its file. A call with an intent shows it at once; the judge then says
-	 * whether it is enough, and when it is not the model line replaces it once that lands. A call
-	 * without an intent shows the model line, else its main argument. Only that wait is unsettled.
-	 * A call with a subject never falls back to its raw path or edit script; the subject column shows it.
-	 * Group mode shows an intent as written: its rows are passing steps, not worth a judge request.
-	 */
-	private title(call: CallState, forceLines = false): { text: string; settled: boolean } {
+	/** Use a model title if available, otherwise the intent or argument fallback. */
+	private title(call: CallState, forceLines = false, request = true): { text: string; settled: boolean } {
 		const intent = this.intent(call);
 		const text = this.callText(call);
 		const subject = callSubject(call.name ?? "", call.args);
 		if (text && (call.argsComplete || call.result) && !(intent && this.host.mode() === "group" && !forceLines)) {
 			const key = `call:${callPrompt(text)}`;
-			if (intent) this.intents.request(key, text, intent);
+			if (intent && request) this.intents.request(key, text, intent);
 			if (!intent || this.intents.verdict(key) === false) {
-				this.lines.request(key, CallSystemPrompt, callPrompt(text));
+				if (request) this.lines.request(key, CallSystemPrompt, callPrompt(text));
 				const line = this.lines.get(key);
 				// With a subject column the model's filename lead is redundant, and sometimes wrong; without one it is the only file named.
 				const labels = [toolLabel(call.name ?? ""), callLabel(call.name ?? "", call.args)];
@@ -756,14 +744,6 @@ export class ToolRows {
 		return asked === undefined || now - asked >= HoldMs;
 	}
 
-	private titleReady(call: CallState): boolean {
-		if (this.running(call)) return false;
-		const key = this.lineKey(call);
-		if (!key) return true;
-		const intent = this.intent(call);
-		const verdict = intent ? this.intents.verdict(key) : false;
-		return verdict === true || (verdict === false && this.lines.get(key) !== undefined);
-	}
 
 	/* -------------------------------- drawing -------------------------------- */
 
@@ -786,13 +766,7 @@ export class ToolRows {
 			return asked === undefined || now - asked >= HoldMs;
 		}
 		if (state.stableLines && (this.host.mode() === "lines" || state.stableLines.length > 0)) {
-			if (run.tail) return calls.every(call => this.titleReady(call));
-			// Content follows the run: waiting for queued titles would append rows to a block the
-			// transcript has already moved past. Grace briefly, then publish the best text so far.
-			if (calls.some(call => this.running(call))) return false;
-			if (now - (run.closedAt ?? now) < HoldMs && !calls.every(call => this.titleReady(call))) return false;
-			this.publishStable(state, calls, calls.map(call => this.title(call, (state.stableLines?.length ?? 0) > 0)), this.host.theme(), true);
-			return true;
+			return calls.every(call => !this.running(call));
 		}
 		return calls.every(call => this.lineSettled(call, now));
 	}
@@ -808,8 +782,9 @@ export class ToolRows {
 		if (this.host.mode() === "group" && !state.stableLines?.length && run.closed && !calls.some(call => this.running(call))) {
 			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));
 		}
-		const titles = calls.map(call => this.title(call, (state.stableLines?.length ?? 0) > 0));
-		if (state.stableLines && (this.host.mode() === "lines" || state.stableLines.length > 0)) {
+		const useStableLines = !!state.stableLines && (this.host.mode() === "lines" || state.stableLines.length > 0);
+		const titles = calls.map(call => this.title(call, (state.stableLines?.length ?? 0) > 0, !useStableLines || this.running(call)));
+		if (useStableLines) {
 			return this.lineRows(state, calls, titles, width);
 		}
 		const labelWidth = Math.max(...calls.map(call => visibleWidth(displayToolLabel(callLabel(call.name ?? "tool", call.args)))));
@@ -823,52 +798,52 @@ export class ToolRows {
 		]);
 	}
 
-	/** Publishes completed calls onto the append-only prefix: titles that are ready, or — when a flush
-	 * closes a run the transcript has moved past — every settled call with the best text so far. */
-	private publishStable(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], theme: Theme, flush: boolean): void {
-		const stable = state.stableLines;
-		if (!stable) return;
-		for (let index = stable.length; index < calls.length; index++) {
+	private lineRows(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], width: number): string[] {
+		const stable = state.stableLines!;
+		const pending = state.pendingLines ??= new Map();
+		const published = new Set(stable.map(line => line.key));
+		const live: string[] = [];
+		const theme = this.host.theme();
+		let blocked = false;
+		for (let index = 0; index < calls.length; index++) {
 			const call = calls[index]!;
-			if (this.running(call)) break;
-			if (!flush && !this.titleReady(call)) break;
+			const key = call.id ?? `line-${index}`;
+			if (published.has(key)) continue;
 			const prefix = `${this.glyph(call, theme)} ${this.label(call, theme)}`;
 			const title = this.body(titles[index]!, theme);
 			const subject = callSubject(call.name ?? "", call.args);
 			const link = subject ? this.subject(subject, theme, call) : undefined;
-			const footer = this.taskFooter(call, theme, 10000);
-			const cache = new Map<number, readonly string[]>();
-			stable.push({
-				key: call.id ?? `line-${index}`,
-				render: (rowWidth: number) => {
-					let rows = cache.get(rowWidth);
-					if (!rows) {
-						rows = [formatToolLine(prefix, title, link, rowWidth), ...footer.map(row => truncateToWidth(row, rowWidth))];
-						cache.set(rowWidth, rows);
-					}
-					return rows;
-				},
-			});
+			if (this.running(call)) {
+				blocked = true;
+				live.push(formatToolLine(prefix, title, link, width), ...this.taskFooter(call, theme, width));
+				continue;
+			}
+			let line = pending.get(key);
+			if (!line) {
+				const footer = this.taskFooter(call, theme, 10000);
+				const cache = new Map<number, readonly string[]>();
+				line = {
+					key,
+					render: (rowWidth: number) => {
+						let rows = cache.get(rowWidth);
+						if (!rows) {
+							rows = [formatToolLine(prefix, title, link, rowWidth), ...footer.map(row => truncateToWidth(row, rowWidth))];
+							cache.set(rowWidth, rows);
+						}
+						return rows;
+					},
+				};
+				pending.set(key, line);
+			}
+			if (blocked) {
+				live.push(...line.render(width));
+			} else {
+				stable.push(line);
+				published.add(key);
+				pending.delete(key);
+			}
 		}
-	}
-
-	private lineRows(state: BlockState, calls: CallState[], titles: { text: string; settled: boolean }[], width: number): string[] {
-		const stable = state.stableLines!;
-		const theme = this.host.theme();
-		this.publishStable(state, calls, titles, theme, false);
-		return [
-			...stable.flatMap(line => line.render(width)),
-			...calls.slice(stable.length).flatMap((call, offset) => {
-				if (!this.running(call)) return [];
-				const title = titles[stable.length + offset]!;
-				const subject = callSubject(call.name ?? "", call.args);
-				const prefix = `${this.glyph(call, theme)} ${this.label(call, theme)}`;
-				return [
-					formatToolLine(prefix, this.body(title, theme), subject ? this.subject(subject, theme, call) : undefined, width),
-					...this.taskFooter(call, theme, width),
-				];
-			}),
-		];
+		return [...stable.flatMap(line => line.render(width)), ...live];
 	}
 
 	/** A task call's subagent footer under its row: OMP's compact agent rows, indented; empty for other calls or before progress arrives. */

@@ -7,6 +7,7 @@ import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import { createIrcMessageCard } from "@oh-my-pi/pi-tui/tools/wait";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { callLabel, callSubject, CallSystemPrompt, cleanLine, commandName, commitMessage, fallbackLine, planRuns, setSkillNames, withoutCopiedLines, withoutLabel, type ToolRowsMode } from "../lib/tool-rows";
@@ -219,12 +220,12 @@ test("read labels link to the original local file rather than a matching basenam
 		await judged(raw);
 		const targets = raw().flatMap(row => [...row.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)/g)].map(match => match[1]));
 		expect(targets).toEqual([
-			fileUriForTerminal(packagePath, { line: 1 }, TERMINAL.id),
-			fileUriForTerminal(skillPath, undefined, TERMINAL.id),
-			fileUriForTerminal(imagePath, undefined, TERMINAL.id),
-			fileUriForTerminal(resolve("lib/tool-rows-host.ts"), { line: 1 }, TERMINAL.id),
-			fileUriForTerminal(packagePath, undefined, TERMINAL.id),
-			fileUriForTerminal(skillPath, undefined, TERMINAL.id),
+			fileUriForTerminal(packagePath, { line: 1 }, TERMINAL.id)!,
+			fileUriForTerminal(skillPath, undefined, TERMINAL.id)!,
+			fileUriForTerminal(imagePath, undefined, TERMINAL.id)!,
+			fileUriForTerminal(resolve("lib/tool-rows-host.ts"), { line: 1 }, TERMINAL.id)!,
+			fileUriForTerminal(packagePath, undefined, TERMINAL.id)!,
+			fileUriForTerminal(skillPath, undefined, TERMINAL.id)!,
 		]);
 		expect(view().join("\n")).toContain("package.json:1-44");
 		expect(view().join("\n")).toContain("SKILL.md");
@@ -235,17 +236,35 @@ test("read labels link to the original local file rather than a matching basenam
 	}
 });
 
-test("lines mode draws a run's calls on adjacent rows, across a harness notice", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode);
+test("a visible harness notice remains between tool calls", async () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" }, undefined, () => 1);
 	try {
-		transcript.addChild(new Text("prompt", 0, 0));
-		tool("bash", { command: "git status" }, "a");
+		const head = tool("bash", { command: "git status", i: "Checking status" }, "a");
 		transcript.addChild(new StatusNotice("a harness notice"));
+		expect(view().join("\n")).toContain("a harness notice");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
-		view();
-		await judged(view);
-		expect(compact(view())).toEqual(["prompt", "", "✔ GIT Inspect with bash", "✔ GREP Inspect with grep"]);
+		const live = view().join("\n");
+		expect(live).toContain("a harness notice");
+		expect(live.indexOf("Checking status")).toBeLessThan(live.indexOf("a harness notice"));
+		expect(live.indexOf("a harness notice")).toBeLessThan(live.indexOf("Finding TODOs"));
+		head.releaseRenderCaches();
+		expect(plain(transcript.render(100)).join("\n")).toContain("a harness notice");
+	} finally {
+		uninstall();
+	}
+});
+
+test("an IRC message remains between tool calls", () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" });
+	try {
+		tool("read", { path: "src/plan.ts", i: "Reading the plan" }, "read");
+		transcript.addChild(createIrcMessageCard({ kind: "incoming", from: "Scout", body: "Evidence ready" }, () => false, theme));
+		expect(view().join("\n")).toContain("Evidence ready");
+		tool("write", { path: "src/out.ts", content: "done", i: "Writing the result" }, "write");
+		const rendered = view().join("\n");
+		expect(rendered).toContain("Evidence ready");
+		expect(rendered.indexOf("Reading the plan")).toBeLessThan(rendered.indexOf("Evidence ready"));
+		expect(rendered.indexOf("Evidence ready")).toBeLessThan(rendered.indexOf("Writing the result"));
 	} finally {
 		uninstall();
 	}
@@ -323,55 +342,98 @@ test("blocks moved into another transcript without addChild still draw as rows (
 	}
 });
 
-test("lines mode shows intents at once, lets model lines replace them, aligns columns, and drops the model's filename lead", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode);
+test("completed lines keep their original text when titles arrive later", async () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" });
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		tool("read", { path: "lib/tool-rows-host.ts:10-40" }, "a");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
-		view();
+		const initial = compact(view().slice(2));
 		await judged(view);
-		expect(compact(view().slice(2))).toEqual([
-			"✔ READ render draws rows; plan groups runs tool-rows-host.ts:10-40",
-			"✔ GREP Inspect with grep",
-			"✔ READ render draws rows; plan groups runs a.ts",
+		expect(initial).toEqual([
+			"✔ READ tool-rows-host.ts:10-40",
+			"✔ GREP Finding TODOs",
+			"✔ READ Reading a a.ts",
 		]);
+		expect(compact(view().slice(2))).toEqual(initial);
 	} finally {
 		uninstall();
 	}
 });
 
-test("a closed run with content after it stops waiting for model lines and publishes its calls with intents", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode, async () => new Promise(() => {}));
+test("a completed read stays visible while its title is pending and later calls arrive", () => {
+	const { uninstall, transcript, tool, calls, view } = setup({ value: "lines" }, async () => new Promise(() => {}));
+	try {
+		const args = { path: "src/plan.ts", i: "Reading the plan" };
+		calls.set("read", { name: "read", args });
+		const read = new ToolExecutionComponent("read", args, {}, undefined, ui, process.cwd(), "read");
+		transcript.addChild(read);
+		read.updateArgs(args, "read");
+		expect(view().join("\n")).toContain("Reading the plan");
+
+		read.updateResult({ content: [{ type: "text", text: "plan" }] }, false, "read");
+		tool("write", { path: "src/out.ts", content: "done", i: "Writing the result" }, "write");
+		const rendered = view().join("\n");
+		expect(rendered).toContain("Reading the plan");
+		expect(rendered).toContain("Writing the result");
+	} finally {
+		uninstall();
+	}
+});
+
+test("out-of-order completion stays visible without entering scrollback ahead of the first call", () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" }, async () => new Promise(() => {}));
+	try {
+		const first = tool("grep", { pattern: "one", i: "First call" }, "first");
+		first.updateResult({ content: [{ type: "text", text: "working" }] }, true, "first");
+		tool("write", { path: "src/out.ts", content: "done", i: "Second call" }, "second");
+		const before = compact(view());
+		expect(before.join("\n")).toContain("First call");
+		expect(before.join("\n")).toContain("Second call");
+		expect(transcript.peekFinalizedBatch(100, 1)).toBeUndefined();
+		first.updateResult({ content: [{ type: "text", text: "done" }] }, false, "first");
+		const after = compact(view());
+		expect(after.join("\n")).toContain("First call");
+		expect(after.join("\n")).toContain("Second call");
+		expect(after.indexOf(before.find(row => row.includes("Second call"))!)).toBeGreaterThan(0);
+		expect(plain(transcript.peekFinalizedBatch(100, 1)?.rows ?? []).join("\n")).toContain("First call");
+	} finally {
+		uninstall();
+	}
+});
+
+test("removing an already published read does not make the next read disappear", () => {
+	const { uninstall, transcript, calls, readGroups, view } = setup({ value: "lines" });
+	try {
+		const group = new ReadToolGroupComponent();
+		const first = { path: "src/first.ts", i: "Reading first" };
+		const second = { path: "src/second.ts", i: "Reading second" };
+		calls.set("first", { name: "read", args: first });
+		calls.set("second", { name: "read", args: second });
+		const entries = new Map([["first", { args: first, result: { content: [] } }]]);
+		readGroups.set(group, entries);
+		transcript.addChild(group);
+		expect(view().join("\n")).toContain("Reading first");
+		entries.delete("first");
+		entries.set("second", { args: second, result: { content: [] } });
+		const rendered = view().join("\n");
+		expect(rendered).toContain("Reading first");
+		expect(rendered).toContain("Reading second");
+	} finally {
+		uninstall();
+	}
+});
+
+test("a completed run closes without waiting for model titles", () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" }, async () => new Promise(() => {}));
 	try {
 		const head = tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "g1");
 		tool("bash", { command: "git status", i: "Checking status" }, "b1");
-		view();
 		expect(head.isTranscriptBlockFinalized()).toBe(false);
-		// The reply closes the run; within the grace the head still waits for queued titles.
 		transcript.addChild(new Text("reply", 0, 0));
-		expect(head.isTranscriptBlockFinalized()).toBe(false);
-		vi.advanceTimersByTime(4_000);
 		expect(head.isTranscriptBlockFinalized()).toBe(true);
 		expect(compact(view())).toEqual(["✔ GREP Finding TODOs", "✔ GIT Checking status", "", "reply"]);
-	} finally {
-		uninstall();
-	}
-});
-
-test("a run still at the transcript's tail keeps waiting for its model titles", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, rows } = setup(mode, async () => new Promise(() => {}));
-	try {
-		const head = tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "g1");
-		rows.setIdle(true);
-		expect(head.isTranscriptBlockFinalized()).toBe(false);
-		vi.advanceTimersByTime(60_000);
-		// Still waiting: the tail may hold the run open for its queued titles, so nothing flushes.
-		expect(head.isTranscriptBlockFinalized()).toBe(false);
 	} finally {
 		uninstall();
 	}
@@ -382,7 +444,7 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 	const { uninstall, transcript, tool } = setup(mode);
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
-		tool("read", { path: "lib/tool-rows-host.ts:10-40" }, "a");
+		tool("read", { path: "lib/tool-rows-host.ts:10-40", i: "Understanding a very long title for the renderer" }, "a");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
 		transcript.renderViewport(50, 30, frame);
@@ -390,8 +452,8 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
 		expect(rows.map(row => visibleWidth(row) <= 50)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
-		expect(rows[0]).toContain("render draws …");
-		expect(rows[1]).toContain("Inspect with grep");
+		expect(rows[0]).toContain("Understanding");
+		expect(rows[1]).toContain("Finding TODOs");
 		expect(rows[2]).toEndWith("a.ts");
 		expect(visibleWidth(rows[0]!)).toBe(50);
 		expect(visibleWidth(rows[2]!)).toBe(50);
@@ -420,15 +482,12 @@ test("a title longer than the others still lines up every row's file", async () 
 	}
 });
 
-test("a call with no subject column keeps the model's filename lead", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, tool, view } = setup(mode, async () => "approval.ts: function resolveApproval");
+test("a call with no subject column keeps its fallback text", () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" });
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		tool("grep", { pattern: "resolveApproval" }, "a");
-		view();
-		await settle();
-		expect(compact(view().slice(2))).toEqual(["✔ GREP approval.ts: function resolveApproval"]);
+		expect(compact(view().slice(2))).toEqual(["✔ GREP resolveApproval"]);
 	} finally {
 		uninstall();
 	}
@@ -555,28 +614,10 @@ test("a row whose subject the wiki knows leads its subject with a badge, and the
 	}
 });
 
-test("a call's line request names the agent's intent and the steps before it", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const prompts: string[] = [];
-	const { uninstall, transcript, tool, view } = setup(mode, async (_system, prompt) => (prompts.push(prompt), ""));
-	try {
-		transcript.addChild(new Text("prompt", 0, 0));
-		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "a");
-		tool("bash", { command: "git status" }, "b");
-		await judged(view);
-		await judged(view);
-		const second = prompts.map(prompt => JSON.parse(prompt)).find(prompt => prompt.tool === "bash");
-		expect(second).toEqual({ tool: "bash", args: { command: "git status" }, earlier: ["Grep: Finding TODOs"] });
-		const first = prompts.map(prompt => JSON.parse(prompt)).find(prompt => prompt.tool === "grep");
-		expect(first).toEqual({ tool: "grep", intent: "Finding TODOs", args: { pattern: "TODO" } });
-	} finally {
-		uninstall();
-	}
-});
 
-test("a grouped read whose args OMP stripped of the intent shows the agent's intent until the model line replaces it", async () => {
+test("a grouped read retains the agent's intent after completion", async () => {
 	const mode = { value: "lines" as ToolRowsMode };
-	const { uninstall, transcript, calls, readGroups, view } = setup(mode, async () => "Learning how the a module loads its config");
+	const { uninstall, transcript, calls, readGroups, view } = setup(mode);
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		const group = new ReadToolGroupComponent();
@@ -587,50 +628,20 @@ test("a grouped read whose args OMP stripped of the intent shows the agent's int
 		readGroups.get(group)!.set("r1", { args: { path: "src/a.ts" }, result: { content: [{ type: "text", text: "x" }] } });
 		view();
 		await judged(view);
-		expect(compact(view().slice(2))).toEqual(["✔ READ Learning how the a module loads its config a.ts"]);
+		expect(compact(view().slice(2))).toEqual(["✔ READ Checking the a module a.ts"]);
 	} finally {
 		uninstall();
 	}
 });
 
-test("an intent the judge finds enough stays, and the model is never asked for that call", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const prompts: string[] = [];
-	const { uninstall, transcript, tool, judgeStates, view } = setup(mode, async (_system, prompt) => {
-		prompts.push(prompt);
-		return "Rummaging through the code for loose ends";
-	}, intent => (intent.startsWith("Finding") ? 0.9 : 0.1));
-	try {
-		transcript.addChild(new Text("prompt", 0, 0));
-		tool("grep", { pattern: "TODO", i: "Finding TODOs left in the tool rows host" }, "a");
-		tool("bash", { command: "ls", i: "Looking" }, "b");
-		view();
-		await judged(view);
-		expect(compact(view().slice(2))).toEqual(["✔ GREP Finding TODOs left in the tool rows host", "✔ LS Rummaging through the code for loose ends"]);
-		// Both calls went to the judge in one request; only the vague one reached the model.
-		expect(judgeStates).toHaveLength(1);
-		expect(prompts.map(prompt => JSON.parse(prompt).tool)).toEqual(["bash"]);
-	} finally {
-		uninstall();
-	}
-});
 
-test("a skill read is labelled by its acronym, names the full skill, and asks the model to sum up what the skill teaches", async () => {
-	const mode = { value: "lines" as ToolRowsMode };
-	const prompts: string[] = [];
-	const { uninstall, transcript, tool, view } = setup(mode, async (system, prompt) => {
-		prompts.push(system + prompt);
-		return "Learning to write prompts native to each model";
-	});
+test("a skill read shows its acronym and full skill name", () => {
+	const { uninstall, transcript, tool, view } = setup({ value: "lines" });
 	setSkillNames(["model-native-prompt", "agents/session-retro"]);
 	try {
 		transcript.addChild(new Text("prompt", 0, 0));
 		tool("read", { path: "skill://model-native-prompt/references/dispatch.md" }, "a");
-		view();
-		await settle();
-		// The label is display-only; the detail column keeps the whole skill, not the resource inside it.
-		expect(compact(view().slice(2))).toEqual(["✔ /MNP Learning to write prompts native to each model model-native-prompt"]);
-		expect(prompts.some(text => text.includes("skill:// path") && text.includes("skill://model-native-prompt/references/dispatch.md"))).toBe(true);
+		expect(compact(view().slice(2))).toEqual(["✔ /MNP model-native-prompt"]);
 	} finally {
 		setSkillNames([]);
 		uninstall();
