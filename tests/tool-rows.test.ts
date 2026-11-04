@@ -4,9 +4,11 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { applyHyperlinkSetting, fileUriForTerminal } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import { Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { Container, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { ReplyWriteComponent, replyDisplayMessage } from "@oh-my-pi/pi-tui/chat/reply-write";
 import { createIrcMessageCard } from "@oh-my-pi/pi-tui/tools/wait";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -777,6 +779,69 @@ test("a failed title falls back without blocking later completed lines", async (
 		await judged(draw);
 		const batch = transcript.peekFinalizedBatch(80, 1);
 		expect(plain(batch?.rows ?? []).join("\n")).toContain("First");
+	} finally {
+		uninstall();
+	}
+});
+
+test.each(["lines", "group"] as const)("an empty reply can start streaming between tool rows in %s mode", (mode) => {
+	const { uninstall, transcript, tool } = setup({ value: mode });
+	try {
+		tool("grep", { pattern: "first", i: "First" }, "first");
+		const reply = new ReplyWriteComponent();
+		transcript.addChild(reply);
+		tool("grep", { pattern: "second", i: "Second" }, "second");
+		for (const width of [40, 100]) {
+			const text = plain(transcript.renderViewport(width, 30, frame)).join("\n");
+			expect(text.indexOf("First")).toBeGreaterThanOrEqual(0);
+			expect(text.indexOf("First")).toBeLessThan(text.indexOf("Second"));
+		}
+		reply.updateArgs({ path: "out://reply", content: "A visible reply" });
+		for (const width of [40, 100]) {
+			const text = plain(transcript.renderViewport(width, 30, frame)).join("\n");
+			expect(text.indexOf("First")).toBeGreaterThanOrEqual(0);
+			expect(text.indexOf("First")).toBeLessThan(text.indexOf("A visible reply"));
+			expect(text.indexOf("A visible reply")).toBeLessThan(text.indexOf("Second"));
+			expect(text.split("Second")).toHaveLength(2);
+		}
+	} finally {
+		uninstall();
+	}
+});
+
+test("a nested assistant reply stays between tool runs", () => {
+	const { uninstall, transcript, tool } = setup({ value: "lines" });
+	try {
+		tool("grep", { pattern: "first", i: "First" }, "first");
+		const reply = new AssistantMessageComponent(replyDisplayMessage("A nested reply"));
+		transcript.addChild(reply);
+		transcript.children.splice(transcript.children.indexOf(reply), 1);
+		const wrapper = new Container();
+		wrapper.addChild(reply);
+		transcript.addChild(wrapper);
+		tool("grep", { pattern: "second", i: "Second" }, "second");
+		for (const width of [40, 100]) {
+			const text = plain(transcript.renderViewport(width, 30, frame)).join("\n");
+			expect(text.indexOf("First")).toBeGreaterThanOrEqual(0);
+			expect(text.indexOf("First")).toBeLessThan(text.indexOf("A nested reply"));
+			expect(text.indexOf("A nested reply")).toBeLessThan(text.indexOf("Second"));
+		}
+	} finally {
+		uninstall();
+	}
+});
+
+test("an empty assistant block does not recurse during run planning", () => {
+	const { uninstall, transcript, tool } = setup({ value: "lines" });
+	try {
+		tool("grep", { pattern: "first", i: "First" }, "first");
+		transcript.addChild(new AssistantMessageComponent());
+		tool("grep", { pattern: "second", i: "Second" }, "second");
+		for (const width of [40, 100]) {
+			const text = plain(transcript.renderViewport(width, 30, frame)).join("\n");
+			expect(text.indexOf("First")).toBeGreaterThanOrEqual(0);
+			expect(text.indexOf("First")).toBeLessThan(text.indexOf("Second"));
+		}
 	} finally {
 		uninstall();
 	}

@@ -1,6 +1,7 @@
 import type { Judge } from "@oh-my-pi/pi-ai";
 import { type Component, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import { ReplyWriteComponent } from "@oh-my-pi/pi-tui/chat/reply-write";
 import { fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import {
@@ -231,6 +232,7 @@ export class ToolRows {
 	private readonly paths = createPathResolver(() => process.cwd());
 	private readonly transcripts = new Set<WeakRef<Container>>();
 	private readonly plans = new WeakMap<Container, Plan>();
+	private readonly classifying = new WeakSet<Container>();
 	private readonly containerOf = new WeakMap<Component, Container>();
 	private readonly bound = new Set<string>();
 	private readonly noted: Array<{ id: string; at: number }> = [];
@@ -557,6 +559,7 @@ export class ToolRows {
 			return typeof render === "function" && trimmedRows(Reflect.apply(render, component, [width])) > 0 ? "break" : "quiet";
 		}
 		if (state?.kind === "assistant") {
+			if (component instanceof ReplyWriteComponent) return "break";
 			if (state.hasText === undefined) {
 				// Built from history: invalidate() replays its message through updateContent.
 				(component as { invalidate?: () => void }).invalidate?.();
@@ -583,7 +586,14 @@ export class ToolRows {
 			}
 		}
 		const span = children.slice(start);
-		const runs = planRuns(span.map(child => this.classify(child, this.width)), this.idle);
+		this.classifying.add(container);
+		let items: RunItem[];
+		try {
+			items = span.map(child => this.classify(child, this.width));
+		} finally {
+			this.classifying.delete(container);
+		}
+		const runs = planRuns(items, this.idle);
 		for (const run of runs) {
 			const head = span[run.head]!;
 			const view: RunView = {
@@ -604,7 +614,8 @@ export class ToolRows {
 
 	private roleOf(component: Component): Role | undefined {
 		const container = this.containerFor(component);
-		return container ? this.plan(container).roles.get(component) : undefined;
+		// Classification needs the native rows before a plan exists.
+		return container && !this.classifying.has(container) ? this.plan(container).roles.get(component) : undefined;
 	}
 
 	/**

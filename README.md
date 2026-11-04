@@ -27,6 +27,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - `lines`: one row per call, on adjacent rows with no gap. The tool column uses nine terminal cells. File links align to the right edge. A long title is shortened before its file link.
   - A running call shows its current command or intent. A completed call keeps its best available title, even if a model title arrives later. Completed calls enter scrollback in order.
   - Visible notices remain between calls. Calls after a running call stay visible, but wait for it before they enter scrollback.
+  - An `out://` reply separates tool runs, even before its text arrives.
   - Each tool has its own label colour. A bash row names the program it runs, past any leading `cd dir &&`. A `git commit -m` fallback shows only the commit message.
   - A mode change applies to the next run if the current run has published completed titles.
   - Read file labels link to the original local path, not a file with the same name in the working directory. Cmd+click opens the file. Line selectors stay visible; VS Code links also retain the start line. Links follow `tui.hyperlinks`. Missing files stay plain text.
