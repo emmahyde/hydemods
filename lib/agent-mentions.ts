@@ -1,4 +1,3 @@
-import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { drawerProvider, matchRank, type CompletionItem, type CompletionResult, type EditorProvider } from "./url-drawers";
 import { summarize } from "./xd-proc-drawers";
 
@@ -8,7 +7,12 @@ import { summarize } from "./xd-proc-drawers";
  * message names the mentioned agents and how to delegate to them through the task tool.
  */
 
-export type AgentInfo = { name: string; description?: string };
+export type AgentInfo = {
+	name: string;
+	description?: string;
+	systemPrompt?: string;
+	filePath?: string;
+};
 
 const SCHEME = "@@";
 // Same token boundary OMP's editor uses for `@` completion: line start, whitespace, quote or `=`.
@@ -67,17 +71,34 @@ export function agentHint(names: readonly string[]): string {
  * keystroke. Concurrent callers share one discovery. A failed discovery keeps the last list (or none)
  * for the cache window and reports once through `onError`.
  */
+// In OMP host runtime, discoverAgents is available from the task bundle. In standalone tests,
+// dynamic import avoids loading task dependencies when an injected discover function is supplied.
+async function defaultDiscover(dir: string): Promise<{ agents: AgentInfo[] }> {
+	const { discoverAgents } = await import("@oh-my-pi/pi-coding-agent/task/discovery");
+	return discoverAgents(dir);
+}
+
 export function agentSource(
 	cwd: () => string,
 	disabled: () => readonly string[],
 	onError: (error: unknown) => void = () => {},
+	discover: (dir: string) => Promise<{ agents: AgentInfo[] }> = defaultDiscover,
 ): () => Promise<AgentInfo[]> {
 	let cache: { cwd: string; at: number; agents: AgentInfo[] } | undefined;
 	let pending: Promise<void> | undefined;
 	const refresh = async (dir: string) => {
 		try {
-			const { agents } = await discoverAgents(dir);
-			cache = { cwd: dir, at: Date.now(), agents: agents.map(a => ({ name: a.name, description: a.description })) };
+			const { agents } = await discover(dir);
+			cache = {
+				cwd: dir,
+				at: Date.now(),
+				agents: agents.map(a => ({
+					name: a.name,
+					description: a.description,
+					systemPrompt: a.systemPrompt,
+					filePath: a.filePath,
+				})),
+			};
 		} catch (error) {
 			cache = { cwd: dir, at: Date.now(), agents: cache?.cwd === dir ? cache.agents : [] };
 			onError(error);

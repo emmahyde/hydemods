@@ -36,6 +36,7 @@ import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settin
 import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskDisabledAgents } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { agentHint, agentSource, hasMention, mentionedAgents, withAgentDrawer } from "./lib/agent-mentions";
+import { registerAgentCommands, registerAgentSubcommands, withAgentCommandDrawer } from "./lib/agent-commands";
 import { cappedRenderPayload, collapseTextLines, decodeNestedJson, formatJsonOutput, formatFileExcerpt, isFileExcerpt, formatSearchOutput, formatCommandText, formatJsonWithFooter, markdownOutput, parseGrepOutput, parseTabularData, parseYamlDocument, sanitizeTerminalText, separateGeneratedNoticeFooter, stripGeneratedNoticeFooter } from "./lib/tool-output";
 import { splitArchiveOutput } from "./lib/archive-output";
 import { decodeEvalOutput } from "./lib/eval-output";
@@ -190,6 +191,13 @@ const TWEAK_DEFS: TweakDef[] = [
 		description: "Type @@ to pick a task agent type (the /agents list) with its description inline; the mention tells the agent to delegate to it.",
 		category: "Interface",
 		render: () => "Disabled agents (task.disabledAgents) are left out. Unknown @@names reach the model unchanged.",
+	},
+	{
+		name: "agent-commands",
+		title: "/agent commands",
+		description: "Invoke any OMP task agent as a skill: /agent <name> [prompt] or /agent/<name> [prompt].",
+		category: "Interface",
+		render: () => "Autocompletes discovered agents when typing /agent  or /agent/ and injects the agent's instructions as a skill prompt.",
 	},
 	{
 		name: "stalled-agent-alerts",
@@ -2557,6 +2565,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 	const agents = agentSource(() => liveCtx?.cwd ?? process.cwd(), disabledAgents, error => {
 		liveCtx?.ui.notify(`@@ agent list failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	});
+	registerAgentCommands(pi, agents, () => isTweakEnabled("agent-commands"));
 	pi.on("before_agent_start", async (event, ctx) => {
 		liveCtx = ctx;
 		const prompt = typeof event.prompt === "string" ? event.prompt : "";
@@ -2583,9 +2592,11 @@ export default function hydemods(pi: ExtensionAPI): void {
 				p = withXdDrawer(p, enabled, xd, onApplied);
 				p = withProcDrawer(p, enabled, proc, onApplied);
 				p = withAgentDrawer(p, () => isTweakEnabled("agent-mentions"), agents);
+				p = withAgentCommandDrawer(p, () => isTweakEnabled("agent-commands"), agents);
 				return p as unknown as typeof inner;
 			});
 		}
+		void agents().then(list => registerAgentSubcommands(pi, list, () => isTweakEnabled("agent-commands")));
 		urlPreviews.install(ctx);
 	};
 

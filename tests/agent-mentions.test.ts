@@ -4,13 +4,6 @@ import type { EditorProvider } from "../lib/url-drawers";
 
 let discover: (cwd: string) => Promise<{ agents: { name: string; description?: string }[] }> = async () => ({ agents: [] });
 let discoveries = 0;
-// Bun rebinds the already-imported module's live exports, so agent-mentions sees this stub.
-mock.module("@oh-my-pi/pi-coding-agent/task/discovery", () => ({
-	discoverAgents: (cwd: string) => {
-		discoveries++;
-		return discover(cwd);
-	},
-}));
 
 const agents = [
 	{ name: "task", description: "General-purpose subagent\nwith more lines" },
@@ -89,7 +82,10 @@ test("the source shares one discovery, caches it, filters disabled agents, and k
 	let cwd = "/a";
 	const errors: unknown[] = [];
 	discover = async () => ({ agents });
-	const source = agentSource(() => cwd, () => disabled, error => errors.push(error));
+	const source = agentSource(() => cwd, () => disabled, error => errors.push(error), async dir => {
+		discoveries++;
+		return discover(dir);
+	});
 
 	const [first] = await Promise.all([source(), source()]);
 	expect(first.map(a => a.name)).toEqual(["task", "plan"]);
