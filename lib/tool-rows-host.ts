@@ -39,7 +39,7 @@ import {
 import { taskCardBody, type TaskDetails } from "./task-card";
 import { displayToolLabel } from "./tool-labels";
 import { createPathResolver } from "./path-links";
-import { formatToolLine } from "./tool-line-layout";
+import { formatToolLine, toolLinePrefixCells } from "./tool-line-layout";
 
 /*
  * Tool rows draw each consecutive run from its first block (the head). Visible notices split runs
@@ -821,12 +821,13 @@ export class ToolRows {
 			const key = call.id ?? `line-${index}`;
 			if (published.has(key)) continue;
 			const prefix = `${this.glyph(call, theme)} ${this.label(call, theme)}`;
+			const prefixCells = toolLinePrefixCells(Boolean(this.host.pills?.()));
 			const title = this.body(titles[index]!, theme);
 			const subject = callSubject(call.name ?? "", call.args);
 			const link = subject ? this.subject(subject, theme, call) : undefined;
 			if (this.running(call)) {
 				blocked = true;
-				live.push(formatToolLine(prefix, title, link, width), ...this.taskFooter(call, theme, width));
+				live.push(formatToolLine(prefix, title, link, width, prefixCells), ...this.taskFooter(call, theme, width));
 				continue;
 			}
 			let line = pending.get(key);
@@ -838,7 +839,7 @@ export class ToolRows {
 					render: (rowWidth: number) => {
 						let rows = cache.get(rowWidth);
 						if (!rows) {
-							rows = [formatToolLine(prefix, title, link, rowWidth), ...footer.map(row => truncateToWidth(row, rowWidth))];
+							rows = [formatToolLine(prefix, title, link, rowWidth, prefixCells), ...footer.map(row => truncateToWidth(row, rowWidth))];
 							cache.set(rowWidth, rows);
 						}
 						return rows;

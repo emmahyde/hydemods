@@ -1,11 +1,19 @@
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
-/** A nine-cell tool prefix, a title, and an optional subject docked to the right edge. */
-export function formatToolLine(prefix: string, title: string, subject: string | undefined, width: number): string {
+/** Cells for the tool name in a lines-mode row; longer names are cut. */
+export const TOOL_NAME_CELLS = 20;
+
+/** Prefix cells for a status glyph, a space and a tool name; a pill label adds a space on each side. */
+export function toolLinePrefixCells(pills: boolean): number {
+	return 2 + TOOL_NAME_CELLS + (pills ? 2 : 0);
+}
+
+/** A fixed-width tool prefix, a title, and an optional subject docked to the right edge. */
+export function formatToolLine(prefix: string, title: string, subject: string | undefined, width: number, prefixCells: number): string {
 	width = Math.max(0, Math.floor(width));
 	if (width === 0) return "";
 
-	const prefixWidth = Math.min(9, width);
+	const prefixWidth = Math.min(prefixCells, width);
 	const shownPrefix = truncateToWidth(prefix, prefixWidth, "");
 	const paddedPrefix = shownPrefix + " ".repeat(prefixWidth - visibleWidth(shownPrefix));
 	const contentRoom = width - prefixWidth - 2;

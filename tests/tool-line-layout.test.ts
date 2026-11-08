@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatToolLine } from "../lib/tool-line-layout";
+import { formatToolLine as formatAt, TOOL_NAME_CELLS, toolLinePrefixCells } from "../lib/tool-line-layout";
 
 const plain = (text: string) => text.replace(/\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+// Layout geometry with a nine-cell prefix column.
+const formatToolLine = (prefix: string, title: string, subject: string | undefined, width: number) => formatAt(prefix, title, subject, width, 9);
 
 test("pads styled prefixes to nine cells and separates the title by two spaces", () => {
 	const prefix = "\x1b[32m✔\x1b[0m READ";
@@ -17,6 +19,15 @@ test("truncates long prefixes without shifting the title column", () => {
 	const row = formatToolLine("✔ LONG_TOOL_NAME", "Inspect", undefined, 40);
 	expect(plain(row)).toBe("✔ LONG_TO  Inspect");
 	expect(plain(row).indexOf("Inspect")).toBe(11);
+});
+
+test("the host column keeps a 20-cell tool name whole and cuts the next cell", () => {
+	const name = "N".repeat(TOOL_NAME_CELLS);
+	const cells = toolLinePrefixCells(false);
+	expect(plain(formatAt(`✔ ${name}`, "Inspect", undefined, 60, cells))).toBe(`✔ ${name}  Inspect`);
+	expect(plain(formatAt(`✔ ${name}X`, "Inspect", undefined, 60, cells))).toBe(`✔ ${name}  Inspect`);
+	expect(plain(formatAt("✔ READ", "Inspect", undefined, 60, cells)).indexOf("Inspect")).toBe(cells + 2);
+	expect(plain(formatAt(`✔  ${name} `, "Inspect", undefined, 60, toolLinePrefixCells(true)))).toBe(`✔  ${name}   Inspect`);
 });
 
 test("right aligns the subject instead of padding titles to a shared column", () => {

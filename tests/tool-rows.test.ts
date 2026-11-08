@@ -449,16 +449,16 @@ test("a narrow pane cuts the status line, so the run's files stay on screen and 
 		tool("read", { path: "lib/tool-rows-host.ts:10-40", i: "Understanding a very long title for the renderer" }, "a");
 		tool("grep", { pattern: "TODO", i: "Finding TODOs" }, "b");
 		tool("read", { path: "lib/a.ts", i: "Reading a" }, "c");
-		transcript.renderViewport(50, 30, frame);
-		await judged(() => transcript.renderViewport(50, 30, frame));
-		const rows = plain(transcript.renderViewport(50, 30, frame)).slice(2);
-		expect(rows.map(row => visibleWidth(row) <= 50)).toEqual([true, true, true]);
+		transcript.renderViewport(64, 30, frame);
+		await judged(() => transcript.renderViewport(64, 30, frame));
+		const rows = plain(transcript.renderViewport(64, 30, frame)).slice(2);
+		expect(rows.map(row => visibleWidth(row) <= 64)).toEqual([true, true, true]);
 		expect(rows[0]).toEndWith("  tool-rows-host.ts:10-40");
 		expect(rows[0]).toContain("Understanding");
 		expect(rows[1]).toContain("Finding TODOs");
 		expect(rows[2]).toEndWith("a.ts");
-		expect(visibleWidth(rows[0]!)).toBe(50);
-		expect(visibleWidth(rows[2]!)).toBe(50);
+		expect(visibleWidth(rows[0]!)).toBe(64);
+		expect(visibleWidth(rows[2]!)).toBe(64);
 	} finally {
 		uninstall();
 	}
