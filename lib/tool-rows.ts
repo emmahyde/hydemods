@@ -7,8 +7,9 @@ import { stripControls } from "./eval-summary";
  * - `ast`: hydemods cards with reads, writes, edits, grep hits and printed source as declaration outlines.
  * - `lines`: one row per call, described by a local model, consecutive rows with no gap.
  * - `group`: one row per burst of calls, summarized by a local model once the burst ends.
+ * - `hybrid`: the current call draws as a card; once finalized it collapses to a line.
  */
-export const TOOL_ROWS_MODES = ["cards", "ast", "lines", "group"] as const;
+export const TOOL_ROWS_MODES = ["cards", "ast", "lines", "group", "hybrid"] as const;
 export type ToolRowsMode = (typeof TOOL_ROWS_MODES)[number];
 
 /* --------------------------------- runs ---------------------------------- */
@@ -34,9 +35,10 @@ export interface Run {
 /**
  * Groups consecutive tool blocks, across quiet blocks, into runs. Quiet blocks after a run's last
  * tool stay outside it, so live thinking below the newest call keeps drawing until another call
- * lands after it.
+ * lands after it. With `singleton`, each tool block is its own run (hybrid mode): quiet blocks
+ * are still absorbed so they hide inside the run, but no further tool joins it.
  */
-export function planRuns(items: readonly RunItem[], idle: boolean): Run[] {
+export function planRuns(items: readonly RunItem[], idle: boolean, singleton = false): Run[] {
 	const runs: Run[] = [];
 	let index = 0;
 	while (index < items.length) {
@@ -55,6 +57,10 @@ export function planRuns(items: readonly RunItem[], idle: boolean): Run[] {
 			}
 			if (next === "break") {
 				run.closed = true;
+				break;
+			}
+			if (singleton) {
+				run.quiet.push(...pendingQuiet);
 				break;
 			}
 			run.tools.push(cursor);

@@ -593,7 +593,7 @@ export class ToolRows {
 		} finally {
 			this.classifying.delete(container);
 		}
-		const runs = planRuns(items, this.idle);
+		const runs = planRuns(items, this.idle, this.host.mode() === "hybrid");
 		for (const run of runs) {
 			const head = span[run.head]!;
 			const view: RunView = {
@@ -789,6 +789,8 @@ export class ToolRows {
 		const calls = this.runCalls(run.tools);
 		if (calls.length === 0) return [];
 		const theme = this.host.theme();
+		// Hybrid mode: a run with a running call leaves the native card; finalized runs collapse to a line.
+		if (this.host.mode() === "hybrid" && calls.some(call => this.running(call))) return undefined;
 		// Group mode lists a burst call by call while it runs; once it ends, the summary bullets replace the calls.
 		if (this.host.mode() === "group" && !state.stableLines?.length && run.closed && !calls.some(call => this.running(call))) {
 			return this.groupRows(state, calls, theme, width).map(row => truncateToWidth(row, width));

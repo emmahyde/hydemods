@@ -304,7 +304,7 @@ const collapsedLinesSetting = integerSetting(
 const toolRowsSetting = enumSetting(
 	"tool-rows",
 	"Tool rows",
-	"How tool calls draw. cards: tool cards with plain output. ast: tool cards with reads, writes, edits, grep hits and printed source as declaration outlines. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. Ctrl+O shows the cards.",
+	"How tool calls draw. cards: tool cards with plain output. ast: tool cards with reads, writes, edits, grep hits and printed source as declaration outlines. lines: one row per call, described by a local model, with no gaps. group: one row per burst of calls, summarized by a local model once the agent replies. hybrid: the current call draws as a card; once finalized it collapses to a line. Ctrl+O shows the cards.",
 	TOOL_ROWS_MODES,
 	"group",
 );
@@ -2235,7 +2235,7 @@ export default function hydemods(pi: ExtensionAPI): void {
 		repaintToolCards(ctx);
 		if (ctx.hasUI) ctx.ui.notify(`Tool rows: ${TOOL_ROWS_MODES.map((mode) => (mode === next ? `[${mode}]` : mode)).join(" · ")}`, "info");
 	};
-	pi.registerShortcut("ctrl+n", { description: "Cycle hydemods tool rows (cards → ast → lines → group)", handler: cycleToolRows });
+	pi.registerShortcut("ctrl+n", { description: "Cycle hydemods tool rows (cards → ast → lines → group → hybrid)", handler: cycleToolRows });
 
 	// Sessions saved before the takeover carry a hydemods card message per tool call; the native
 	// card now shows that content, so those messages render as nothing.
