@@ -24,7 +24,7 @@ Restart OMP or run `/reload-plugins`. Then open `/hydemods`.
   - Background shell commands collapse to one line.
   - `wait` collapses to one status line with job counts and names (for example `✓ Wait · 1 completed GatePoll`). Failures lead and turn red. Ctrl+O shows the full snapshot; the model always gets the full result.
 - **Tool rows.** `hydemods.toolRows` in `/settings` (Tools) picks how tool calls draw; Ctrl+N cycles it (cards → lines → group) and flashes which one is on. Ctrl+O shows the full cards in any mode.
-  - `lines`: one row per call, on adjacent rows with no gap. The tool column uses nine terminal cells. File links align to the right edge. A long title is shortened before its file link.
+  - `lines`: one row per call, on adjacent rows with no gap. Tool names occupy 14 terminal cells and longer names are cut. File links align to the right edge. A long title is shortened before its file link.
   - A running call shows its current command or intent. A completed call keeps its best available title, even if a model title arrives later. Completed calls enter scrollback in order.
   - Visible notices remain between calls. Calls after a running call stay visible, but wait for it before they enter scrollback.
   - An `out://` reply separates tool runs, even before its text arrives.

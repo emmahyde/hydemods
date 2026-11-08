@@ -1,7 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
 /** Cells for the tool name in a lines-mode row; longer names are cut. */
-export const TOOL_NAME_CELLS = 20;
+export const TOOL_NAME_CELLS = 14;
 
 /** Prefix cells for a status glyph, a space and a tool name; a pill label adds a space on each side. */
 export function toolLinePrefixCells(pills: boolean): number {

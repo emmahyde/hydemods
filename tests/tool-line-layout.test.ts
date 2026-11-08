@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatToolLine as formatAt, TOOL_NAME_CELLS, toolLinePrefixCells } from "../lib/tool-line-layout";
+import { formatToolLine as formatAt, toolLinePrefixCells } from "../lib/tool-line-layout";
 
 const plain = (text: string) => text.replace(/\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;]*m/g, "");
 // Layout geometry with a nine-cell prefix column.
@@ -21,8 +21,8 @@ test("truncates long prefixes without shifting the title column", () => {
 	expect(plain(row).indexOf("Inspect")).toBe(11);
 });
 
-test("the host column keeps a 20-cell tool name whole and cuts the next cell", () => {
-	const name = "N".repeat(TOOL_NAME_CELLS);
+test("the host column keeps a 14-cell tool name whole and cuts the next cell", () => {
+	const name = "N".repeat(14);
 	const cells = toolLinePrefixCells(false);
 	expect(plain(formatAt(`✔ ${name}`, "Inspect", undefined, 60, cells))).toBe(`✔ ${name}  Inspect`);
 	expect(plain(formatAt(`✔ ${name}X`, "Inspect", undefined, 60, cells))).toBe(`✔ ${name}  Inspect`);
