@@ -86,6 +86,7 @@ import { cfgDisabledExtensions, cfgSkills } from "@oh-my-pi/pi-coding-agent/exte
 type MonitorMessageDetails = { spec: MonitorSpec; result: MonitorResult };
 type MonitorEventDetails = { spec: MonitorSpec; lines: string[] };
 import { runawayEdit } from "./lib/runaway-edit";
+import { withoutSkillListing } from "./lib/subagent-skills";
 
 type StallMessageDetails = Pick<StallAlert, "agentName" | "kind" | "idleMinutes" | "action" | "toolName" | "model">;
 // Subagents never outlive the OMP process, so transcripts untouched since load are dead, not stalled.
@@ -2573,6 +2574,11 @@ export default function hydemods(pi: ExtensionAPI): void {
 		const names = mentionedAgents(prompt, await agents());
 		if (names.length === 0) return;
 		return { message: { customType: "hydemods-agent-mentions", display: true, content: agentHint(names) } };
+	});
+	pi.on("before_agent_start", (event, ctx) => {
+		if (ctx.agent.kind !== "sub") return;
+		const systemPrompt = withoutSkillListing(event.systemPrompt);
+		return systemPrompt && { systemPrompt };
 	});
 	const drawersInstalled = new WeakSet<object>();
 	const installDrawers = (ctx: ExtensionContext) => {
